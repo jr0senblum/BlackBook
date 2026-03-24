@@ -1,0 +1,3 @@
+/**
+ * Shared TypeScript type definitions.
+ */

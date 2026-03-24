@@ -1,0 +1,3 @@
+/**
+ * Search API functions.
+ */
