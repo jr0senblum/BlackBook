@@ -13,7 +13,7 @@ Reference: REQUIREMENTS.md §10 (API), §11 (Data Model), §16 (Agent Instructio
   - All columns, types, NOT NULL constraints, defaults, CHECK constraints
   - All foreign keys with CASCADE/SET NULL behavior per §11
   - All indexes (unique, GIN for tsvector, composite)
-  - `search_vector` generated columns on `companies`, `persons`, `sources`, `inferred_facts`
+  - `search_vector` generated columns on `companies`, `persons`, `sources`, `inferred_facts`, `action_items`
 - [ ] Update `backend/alembic/env.py` to import `Base.metadata` for autogenerate support
 - [ ] Generate the initial Alembic migration
 - [ ] Verify: `alembic upgrade head` succeeds against a real PostgreSQL database
@@ -46,6 +46,12 @@ Reference: REQUIREMENTS.md §10 (API), §11 (Data Model), §16 (Agent Instructio
   - `POST /auth/password/change`
 - [ ] Implement session middleware in `backend/app/dependencies.py`
   - `get_current_session()` dependency that reads the `session` cookie, validates via AuthService, and raises 401 if invalid/expired
+- [ ] Implement `config.py` (`backend/app/config.py`) — Pydantic Settings class covering all required configuration:
+  - `DATABASE_URL` — PostgreSQL connection string
+  - `BLACKBOOK_DATA_DIR` — root path for file storage (§8)
+  - `SESSION_TIMEOUT_MINUTES` — inactivity timeout (default 5, per §7.3)
+  - `LLM_API_KEY` and `LLM_PROVIDER` — API key and provider selection (Anthropic or OpenAI)
+  - Settings loaded from environment variables and/or a local `.env` file; never hardcoded
 - [ ] Implement the error envelope and exception handler
   - Global FastAPI exception handler that catches `DomainError` subclasses and returns the error response format from §10
 - [ ] Implement database session dependency in `backend/app/dependencies.py`
