@@ -7,9 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.exceptions import UnauthenticatedError
+from app.repositories.company_repository import CompanyRepository
 from app.repositories.credential_repository import CredentialRepository
 from app.repositories.session_repository import SessionRepository
 from app.services.auth_service import AuthService
+from app.services.company_service import CompanyService
 
 # Database engine and session factory — created once at import time.
 engine = create_async_engine(settings.database_url, echo=False)
@@ -30,6 +32,11 @@ async def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
         session_repo=SessionRepository(db),
         settings=settings,
     )
+
+
+async def get_company_service(db: AsyncSession = Depends(get_db)) -> CompanyService:
+    """Provide a CompanyService instance."""
+    return CompanyService(company_repo=CompanyRepository(db))
 
 
 async def get_current_session(
