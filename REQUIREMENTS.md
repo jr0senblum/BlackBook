@@ -448,7 +448,7 @@ Background Workers (Python asyncio — same service layer, async entry point;
 ### 9.3 Data Flow
 
 **Ingestion (email or upload):**
-Email/file → IngestionService → PrefixParserService (normalize tags) → `ParsedSource` → IngestionService (apply company routing algorithm §9.7; store `who`/`date`/`src` on Source record; fail fast if routing invalid) → InferenceService (receives `ParsedSource.lines`; LLM extraction) → Repository (store Source + InferredFacts as pending) → pending review queue surfaced on next company access
+Email/file → IngestionService → PrefixParserService (normalize tags) → `ParsedSource` → IngestionService (apply company routing algorithm §9.7; store `who`/`date`/`src` on Source record; fail fast if routing invalid) → InferenceService (receives `ParsedSource.lines`; LLM extraction; returns validated facts as Pydantic models) → IngestionService calls ReviewService.save_facts(facts) → ReviewService writes Source + InferredFacts via InferredFactRepository → pending review queue surfaced on next company access
 
 **Review:**
 Investigator accepts/corrects/merges/dismisses → ReviewService (InferredFact state transition, category branching) → domain service for entity creation (PersonService.create_person(), ActionItemService.create_action_item(), etc.) → ReviewService updates InferredFact status via InferredFactRepository
@@ -962,6 +962,10 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
 | GET    | `/companies/{id}/orgchart`           | Org chart as a hierarchical JSON tree suitable for rendering |
 
 
+**GET `/companies/{id}/people/{person_id}`**
+
+- Output: `{ "person_id", "name", "title", "primary_area_id", "primary_area_name", "reports_to_person_id", "reports_to_name", "action_items": [ { "item_id", "description", "status", "notes", "created_at" } ], "inferred_facts": [ { "fact_id", "category", "value", "source_id" } ] }` — `inferred_facts` contains accepted and corrected facts linked to this person via `functional_area_id` or directly associated; `action_items` contains all items where `person_id` matches this person
+
 **GET `/companies/{id}/orgchart`**
 
 - Output:
@@ -1039,7 +1043,7 @@ All entries link to their originating source via `source_id`. CGKRA and SWOT sec
 
 **GET `/action-items`**
 
-- Query params: `status` (open | complete | all, default: open), `company_id` (optional filter), `limit` (int, default 100, max 500), `offset` (int, default 0)
+- Query params: `status` (open | complete | all, default: open), `company_id` (optional filter), `person_id` (optional filter), `limit` (int, default 100, max 500), `offset` (int, default 0)
 - Output: `{ "total": int, "limit": int, "offset": int, "items": [ { "item_id", "company_id", "company_name", "description", "status", "person_id", "area_id", "notes", "created_at" } ] }`
 
 ---
@@ -1170,8 +1174,6 @@ Sparse/populated thresholds (except `mission`) are configurable. Computed at que
 
 - Input: `multipart/form-data` with `file` (Markdown) and `name` (string)
 - Output: `{ "template_id": string, "name": string }`
-
----
 
 ---
 
@@ -1623,6 +1625,7 @@ blackbook/
 │   │   │   ├── test_ingestion_service.py
 │   │   │   ├── test_inference_service.py
 │   │   │   ├── test_prefix_parser_service.py
+│   │   │   ├── test_review_service.py
 │   │   │   ├── test_person_service.py
 │   │   │   ├── test_auth_service.py
 │   │   │   └── ...
@@ -1728,6 +1731,8 @@ This layout is canonical. Do not reorganize, rename, or add directories without 
 Each phase produces a deployable, testable system. At the end of each phase, the application can be started and the implemented features exercised through the UI. Do not begin a subsequent phase until all tests for the current phase pass.
 
 ### Phase 1 — Foundation: Data Model + Auth + Company CRUD + Frontend Scaffold
+
+**Detailed decomposition**: see [`PHASE1.md`](PHASE1.md) for the step-by-step checklist of 5 sequential units of work.
 
 **Goal**: a running application with login, company list, manual company create/edit/delete, and an empty company profile page.
 
