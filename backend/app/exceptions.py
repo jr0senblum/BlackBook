@@ -1,4 +1,4 @@
-"""Base domain exception classes."""
+"""Base domain exception classes and auth-specific exceptions."""
 
 
 class DomainError(Exception):
@@ -11,3 +11,45 @@ class DomainError(Exception):
     def __init__(self, message: str | None = None):
         self.message = message or self.__class__.message
         super().__init__(self.message)
+
+
+# --- Auth exceptions ---
+
+
+class CredentialsAlreadySetError(DomainError):
+    code = "already_set"
+    status_code = 409
+    message = "Password has already been set"
+
+
+class InvalidCredentialsError(DomainError):
+    code = "invalid_credentials"
+    status_code = 401
+    message = "Invalid username or password"
+
+
+class InvalidCurrentPasswordError(DomainError):
+    code = "invalid_current_password"
+    status_code = 401
+    message = "Current password is incorrect"
+
+
+class UnauthenticatedError(DomainError):
+    code = "unauthenticated"
+    status_code = 401
+    message = "Session missing or expired"
+
+
+# --- Company exceptions ---
+
+
+class CompanyNotFoundError(DomainError):
+    code = "not_found"
+    status_code = 404
+    message = "Company not found"
+
+
+class CompanyNameConflictError(DomainError):
+    code = "name_conflict"
+    status_code = 409
+    message = "A company with this name already exists"
