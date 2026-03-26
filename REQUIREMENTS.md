@@ -1762,6 +1762,8 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 
 ### Phase 2 — Ingestion Pipeline: Upload + Prefix Parser + LLM Extraction + Pending Review (Accept Only)
 
+**Detailed decomposition**: see [`PHASE2.md`](PHASE2.md) for the step-by-step checklist of 8 sequential units of work.
+
 **Goal**: the investigator can upload a file, the system extracts inferred facts via LLM, and the investigator can accept simple facts (person, functional-area, technology, process, CGKRA, SWOT, action-item, other).
 
 **Backend:**
