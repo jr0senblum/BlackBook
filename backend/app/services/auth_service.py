@@ -10,6 +10,7 @@ from app.exceptions import (
     CredentialsAlreadySetError,
     InvalidCredentialsError,
     InvalidCurrentPasswordError,
+    SessionExpiredError,
     UnauthenticatedError,
 )
 from app.repositories.credential_repository import CredentialRepository
@@ -72,10 +73,10 @@ class AuthService:
             raise UnauthenticatedError()
         now = datetime.now(timezone.utc)
         timeout = timedelta(minutes=self._settings.session_timeout_minutes)
-        if now - session.last_active_at.replace(tzinfo=timezone.utc) > timeout:
+        if now - session.last_active_at > timeout:
             # Session expired — delete it and reject
             await self._session_repo.delete_by_token(token)
-            raise UnauthenticatedError()
+            raise SessionExpiredError()
         # Session is valid — touch last_active_at
         await self._session_repo.update_last_active(token)
 

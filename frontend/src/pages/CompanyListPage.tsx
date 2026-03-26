@@ -1,13 +1,16 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { createCompany, listCompanies } from "../api/companies";
 import { ApiRequestError } from "../api/client";
 import type { CompanyListItem } from "../types";
 
+const PAGE_SIZE = 25;
+
 function CompanyListPage() {
   const navigate = useNavigate();
   const [companies, setCompanies] = useState<CompanyListItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -19,28 +22,36 @@ function CompanyListPage() {
   const [createError, setCreateError] = useState("");
   const [creating, setCreating] = useState(false);
 
-  async function fetchCompanies() {
-    setLoading(true);
-    try {
-      const result = await listCompanies();
-      setCompanies(result.items);
-      setTotal(result.total);
-      setError("");
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 401) {
-        navigate("/login");
-        return;
+  const fetchCompanies = useCallback(
+    async (newOffset: number) => {
+      setLoading(true);
+      try {
+        const result = await listCompanies(PAGE_SIZE, newOffset);
+        setCompanies(result.items);
+        setTotal(result.total);
+        setOffset(newOffset);
+        setError("");
+      } catch (err) {
+        if (err instanceof ApiRequestError && err.status === 401) {
+          navigate("/login");
+          return;
+        }
+        setError("Failed to load companies.");
+      } finally {
+        setLoading(false);
       }
-      setError("Failed to load companies.");
-    } finally {
-      setLoading(false);
-    }
-  }
+    },
+    [navigate],
+  );
 
   useEffect(() => {
-    void fetchCompanies();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void fetchCompanies(0);
+  }, [fetchCompanies]);
+
+  const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hasPrev = offset > 0;
+  const hasNext = offset + PAGE_SIZE < total;
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
@@ -126,13 +137,12 @@ function CompanyListPage() {
 
       {loading ? (
         <p className="text-muted">Loading...</p>
-      ) : companies.length === 0 ? (
+      ) : companies.length === 0 && offset === 0 ? (
         <p className="text-muted">
           No companies yet. Click &quot;+ New Company&quot; to get started.
         </p>
       ) : (
         <>
-          <p className="text-muted">{total} companies</p>
           <table>
             <thead>
               <tr>
@@ -153,6 +163,23 @@ function CompanyListPage() {
               ))}
             </tbody>
           </table>
+          <div className="pagination">
+            <button
+              disabled={!hasPrev || loading}
+              onClick={() => void fetchCompanies(offset - PAGE_SIZE)}
+            >
+              Previous
+            </button>
+            <span className="text-muted">
+              Page {currentPage} of {totalPages} ({total} companies)
+            </span>
+            <button
+              disabled={!hasNext || loading}
+              onClick={() => void fetchCompanies(offset + PAGE_SIZE)}
+            >
+              Next
+            </button>
+          </div>
         </>
       )}
     </div>

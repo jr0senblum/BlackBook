@@ -61,11 +61,12 @@ async def update_company(
     _session: str = Depends(get_current_session),
 ) -> CompanyDetailResponse:
     """Update top-level company fields (name, mission, vision)."""
+    # Only forward the fields the client explicitly included in the JSON body.
+    # This lets the service distinguish "not provided" from "set to null."
+    fields = body.model_dump(include=body.model_fields_set)
     result = await company_service.update_company(
         company_id=company_id,
-        name=body.name,
-        mission=body.mission,
-        vision=body.vision,
+        fields=fields,
     )
     return CompanyDetailResponse(**result)
 

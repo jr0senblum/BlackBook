@@ -163,6 +163,41 @@ async def test_update_company_not_found(client: AsyncClient) -> None:
     assert response.status_code == 404
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_null_name_rejected(client: AsyncClient) -> None:
+    """PUT /companies/{id} with name: null returns 422."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "Null Name Corp"},
+    )
+    company_id = create_resp.json()["company_id"]
+    response = await client.put(
+        f"/api/v1/companies/{company_id}",
+        json={"name": None},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_nullify_mission(client: AsyncClient) -> None:
+    """PUT /companies/{id} with mission: null clears the field."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "Nullify API Corp", "mission": "Old mission"},
+    )
+    company_id = create_resp.json()["company_id"]
+    response = await client.put(
+        f"/api/v1/companies/{company_id}",
+        json={"mission": None},
+    )
+    assert response.status_code == 200
+    assert response.json()["mission"] is None
+    # Name should be unchanged.
+    assert response.json()["name"] == "Nullify API Corp"
+
+
 # ── DELETE /companies/{id} ───────────────────────────────────────
 
 

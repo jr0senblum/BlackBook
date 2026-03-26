@@ -103,8 +103,7 @@ async def test_update_company(company_service: CompanyService) -> None:
     created = await company_service.create_company(name="Update Corp")
     result = await company_service.update_company(
         company_id=created["company_id"],
-        name="Updated Corp",
-        mission="New mission",
+        fields={"name": "Updated Corp", "mission": "New mission"},
     )
     assert result["name"] == "Updated Corp"
     assert result["mission"] == "New mission"
@@ -114,7 +113,7 @@ async def test_update_company(company_service: CompanyService) -> None:
 async def test_update_company_not_found(company_service: CompanyService) -> None:
     """Updating a non-existent company raises CompanyNotFoundError."""
     with pytest.raises(CompanyNotFoundError):
-        await company_service.update_company(company_id=uuid4(), name="X")
+        await company_service.update_company(company_id=uuid4(), fields={"name": "X"})
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -124,8 +123,20 @@ async def test_update_company_name_conflict(company_service: CompanyService) -> 
     created = await company_service.create_company(name="Conflict Source")
     with pytest.raises(CompanyNameConflictError):
         await company_service.update_company(
-            company_id=created["company_id"], name="conflict target"
+            company_id=created["company_id"], fields={"name": "conflict target"}
         )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_nullify_mission(company_service: CompanyService) -> None:
+    """Setting mission to None clears it."""
+    created = await company_service.create_company(
+        name="Nullify Corp", mission="Old mission"
+    )
+    result = await company_service.update_company(
+        company_id=created["company_id"], fields={"mission": None}
+    )
+    assert result["mission"] is None
 
 
 # ── delete_company ───────────────────────────────────────────────

@@ -40,6 +40,16 @@ class UnauthenticatedError(DomainError):
     message = "Session missing or expired"
 
 
+class SessionExpiredError(UnauthenticatedError):
+    """Subclass for expired (vs. missing/invalid) sessions.
+
+    Same status code and error code as UnauthenticatedError — the distinction
+    is internal only, useful for logging or future differentiation.
+    """
+
+    message = "Session has expired"
+
+
 # --- Company exceptions ---
 
 

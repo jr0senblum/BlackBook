@@ -2,9 +2,11 @@ import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login, setPassword } from "../api/auth";
 import { ApiRequestError } from "../api/client";
+import { useAuth } from "../hooks/useAuth";
 
 function LoginPage() {
   const navigate = useNavigate();
+  const { markAuthenticated } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPasswordVal] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -18,6 +20,7 @@ function LoginPage() {
     setLoading(true);
     try {
       await login(username, password);
+      markAuthenticated();
       navigate("/");
     } catch (err) {
       if (err instanceof ApiRequestError) {
@@ -49,6 +52,7 @@ function LoginPage() {
     try {
       await setPassword(username, password);
       await login(username, password);
+      markAuthenticated();
       navigate("/");
     } catch (err) {
       if (err instanceof ApiRequestError) {

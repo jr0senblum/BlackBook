@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     session_timeout_minutes: int = 5
 
     # LLM
+    llm_provider: str = ""  # "anthropic" or "openai"
     llm_api_key: str = ""
     llm_api_url: str = ""
     llm_model: str = ""

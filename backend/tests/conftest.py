@@ -1,4 +1,4 @@
-"""Fixtures: test DB, test client, service mocks."""
+"""Fixtures: test DB, test client, per-test savepoint isolation."""
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator
@@ -6,8 +6,12 @@ from collections.abc import AsyncGenerator, Generator
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from app.config import Settings
 from app.dependencies import get_db
@@ -18,7 +22,6 @@ from app.models.base import Base
 TEST_DATABASE_URL = "postgresql+asyncpg://localhost:5432/blackbook_test"
 
 test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-test_session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
 
 @pytest.fixture(scope="session")
@@ -37,15 +40,33 @@ async def setup_database() -> AsyncGenerator[None, None]:
     yield
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+    await test_engine.dispose()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def db_session(setup_database: None) -> AsyncGenerator[AsyncSession, None]:
-    """Provide a transactional database session that rolls back after each test."""
-    async with test_session_factory() as session:
-        async with session.begin():
-            yield session
-            await session.rollback()
+async def db_session(
+    setup_database: None,
+) -> AsyncGenerator[AsyncSession, None]:
+    """Per-test database session with savepoint isolation.
+
+    Opens a real connection-level transaction, then a SAVEPOINT inside it.
+    The session is bound to the connection so all ORM operations run inside
+    the savepoint. After the test, the savepoint (and therefore the outer
+    transaction) is rolled back — leaving the database unchanged.
+    """
+    async with test_engine.connect() as conn:
+        # Outer transaction — never committed.
+        txn = await conn.begin()
+        # Bind a session to this connection so it shares the transaction.
+        session = AsyncSession(bind=conn, expire_on_commit=False)
+        # SAVEPOINT — the test's writes go here.
+        await conn.begin_nested()
+
+        yield session
+
+        # Teardown: close session, roll back everything.
+        await session.close()
+        await txn.rollback()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -62,27 +83,6 @@ async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="https://test") as ac:
         yield ac
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def authenticated_client(client: AsyncClient) -> AsyncClient:
-    """Provide a client with a valid session cookie.
-
-    Sets the password and logs in first.
-    """
-    # Set password (may already be set from another test — ignore 409)
-    await client.post(
-        "/api/v1/auth/password/set",
-        json={"username": "investigator", "password": "testpassword123"},
-    )
-    # Login
-    response = await client.post(
-        "/api/v1/auth/login",
-        json={"username": "investigator", "password": "testpassword123"},
-    )
-    assert response.status_code == 200
-    # The session cookie is now stored on the client
-    return client
 
 
 def get_test_settings() -> Settings:

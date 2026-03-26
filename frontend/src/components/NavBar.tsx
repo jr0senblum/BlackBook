@@ -1,8 +1,10 @@
 import { useNavigate } from "react-router-dom";
 import { logout } from "../api/auth";
+import { useAuth } from "../hooks/useAuth";
 
 function NavBar() {
   const navigate = useNavigate();
+  const { markUnauthenticated } = useAuth();
 
   async function handleLogout() {
     try {
@@ -10,6 +12,7 @@ function NavBar() {
     } catch {
       // Even if the server rejects, clear client state.
     }
+    markUnauthenticated();
     navigate("/login");
   }
 

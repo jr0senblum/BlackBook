@@ -50,32 +50,27 @@ class CompanyService:
     async def update_company(
         self,
         company_id: UUID,
-        name: str | None = None,
-        mission: str | None = None,
-        vision: str | None = None,
+        fields: dict[str, str | None],
     ) -> dict:
-        """Update company fields. 404 if not found. 409 if name conflicts."""
+        """Update company fields. 404 if not found. 409 if name conflicts.
+
+        ``fields`` contains only the keys the caller explicitly provided.
+        A value of None means "clear this field."
+        """
         company = await self._repo.get_by_id(company_id)
         if company is None:
             raise CompanyNotFoundError()
 
         # If the name is changing, check for conflicts.
-        if name is not None and name.lower() != company.name.lower():
-            existing = await self._repo.get_by_name_iexact(name)
-            if existing is not None:
-                raise CompanyNameConflictError()
+        if "name" in fields:
+            new_name = fields["name"]
+            if new_name is not None and new_name.lower() != company.name.lower():
+                existing = await self._repo.get_by_name_iexact(new_name)
+                if existing is not None:
+                    raise CompanyNameConflictError()
 
-        # Build kwargs for only the fields that were provided.
-        updates: dict[str, str | None] = {}
-        if name is not None:
-            updates["name"] = name
-        if mission is not None:
-            updates["mission"] = mission
-        if vision is not None:
-            updates["vision"] = vision
-
-        if updates:
-            company = await self._repo.update(company, **updates)
+        if fields:
+            company = await self._repo.update(company, **fields)
 
         return {
             "id": company.id,

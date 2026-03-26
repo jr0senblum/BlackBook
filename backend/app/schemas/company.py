@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class CompanyCreate(BaseModel):
@@ -15,11 +15,24 @@ class CompanyCreate(BaseModel):
 
 
 class CompanyUpdate(BaseModel):
-    """PUT /companies/{id} request body."""
+    """PUT /companies/{id} request body.
+
+    ``name`` uses ``str | None`` so the field can be omitted from the JSON
+    body (Pydantic treats omitted fields as default=None and excludes them
+    from ``model_fields_set``).  However, explicitly sending
+    ``{"name": null}`` is rejected by the validator below because the DB
+    column is NOT NULL.  ``mission`` and ``vision`` are genuinely nullable.
+    """
 
     name: str | None = Field(None, min_length=1, max_length=500)
     mission: str | None = None
     vision: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_null_name(self) -> "CompanyUpdate":
+        if "name" in self.model_fields_set and self.name is None:
+            raise ValueError("name cannot be null")
+        return self
 
 
 class CompanyCreatedResponse(BaseModel):
