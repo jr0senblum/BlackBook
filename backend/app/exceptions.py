@@ -63,3 +63,47 @@ class CompanyNameConflictError(DomainError):
     code = "name_conflict"
     status_code = 409
     message = "A company with this name already exists"
+
+
+# --- Ingestion / Source exceptions ---
+
+
+class RoutingError(DomainError):
+    code = "routing_error"
+    status_code = 422
+    message = "Company routing failed"
+
+
+class SourceNotFoundError(DomainError):
+    code = "source_not_found"
+    status_code = 404
+    message = "Source not found"
+
+
+class SourceNotFailedError(DomainError):
+    code = "source_not_failed"
+    status_code = 409
+    message = "Source is not in a failed state"
+
+
+# --- Inference exceptions ---
+
+
+class InferenceValidationError(DomainError):
+    """LLM response failed validation (bad JSON, missing fields, etc.)."""
+
+    code = "inference_validation_failed"
+    status_code = 500
+    message = "LLM response validation failed"
+
+    def __init__(self, message: str | None = None, raw_response: str | None = None):
+        self.raw_response = raw_response
+        super().__init__(message)
+
+
+class InferenceApiError(DomainError):
+    """LLM API call failed after retries exhausted."""
+
+    code = "inference_api_failed"
+    status_code = 500
+    message = "LLM API call failed"
