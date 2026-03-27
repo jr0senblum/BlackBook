@@ -7,14 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 from app.exceptions import UnauthenticatedError
+from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.company_repository import CompanyRepository
 from app.repositories.credential_repository import CredentialRepository
+from app.repositories.functional_area_repository import FunctionalAreaRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
+from app.repositories.person_repository import PersonRepository
+from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.session_repository import SessionRepository
 from app.repositories.source_repository import SourceRepository
 from app.services.auth_service import AuthService
 from app.services.company_service import CompanyService
 from app.services.ingestion_service import IngestionService
+from app.services.review_service import ReviewService
 from app.workers.ingestion_worker import IngestionQueue, ingestion_queue
 
 # Database engine and session factory — created once at import time.
@@ -23,8 +28,7 @@ async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
 # ---------------------------------------------------------------------------
-# Stub services for InferenceService and ReviewService (not yet implemented).
-# These will be replaced when Units 2 and 5 are implemented.
+# Stub for InferenceService (not yet implemented — Unit 2).
 # ---------------------------------------------------------------------------
 
 
@@ -35,15 +39,7 @@ class _StubInferenceService:
         )
 
 
-class _StubReviewService:
-    async def save_facts(self, source_id, company_id, facts):
-        raise NotImplementedError(
-            "ReviewService not yet implemented (Unit 5)"
-        )
-
-
 _stub_inference_service = _StubInferenceService()
-_stub_review_service = _StubReviewService()
 
 
 # ---------------------------------------------------------------------------
@@ -100,22 +96,41 @@ def get_ingestion_queue() -> IngestionQueue:
     return ingestion_queue
 
 
+async def get_review_service(
+    db: AsyncSession = Depends(get_db),
+) -> ReviewService:
+    """Provide a ReviewService instance."""
+    return _build_review_service(db)
+
+
+def _build_review_service(db: AsyncSession) -> ReviewService:
+    """Build a ReviewService from a session (shared by DI and worker)."""
+    return ReviewService(
+        inferred_fact_repo=InferredFactRepository(db),
+        source_repo=SourceRepository(db),
+        person_repo=PersonRepository(db),
+        functional_area_repo=FunctionalAreaRepository(db),
+        action_item_repo=ActionItemRepository(db),
+        relationship_repo=RelationshipRepository(db),
+    )
+
+
 async def get_ingestion_service(
     db: AsyncSession = Depends(get_db),
 ) -> IngestionService:
     """Provide an IngestionService instance.
 
-    InferenceService and ReviewService are not yet implemented (Units 2 & 5).
-    They are wired as stubs here — the upload/routing/source-CRUD paths work
-    without them, and process_source (called by the background worker) will
-    use the real implementations once they exist.
+    InferenceService is still a stub (Unit 2). ReviewService is now the
+    real implementation. Upload/routing/source-CRUD paths work without
+    InferenceService; process_source (called by the background worker)
+    will use the real InferenceService once Unit 2 is implemented.
     """
     return IngestionService(
         source_repo=SourceRepository(db),
         inferred_fact_repo=InferredFactRepository(db),
         company_repo=CompanyRepository(db),
         inference_service=_stub_inference_service,
-        review_service=_stub_review_service,
+        review_service=_build_review_service(db),
         ingestion_queue=ingestion_queue,
         settings=settings,
     )
@@ -131,7 +146,7 @@ def build_ingestion_service(db: AsyncSession) -> IngestionService:
         inferred_fact_repo=InferredFactRepository(db),
         company_repo=CompanyRepository(db),
         inference_service=_stub_inference_service,
-        review_service=_stub_review_service,
+        review_service=_build_review_service(db),
         ingestion_queue=ingestion_queue,
         settings=settings,
     )
