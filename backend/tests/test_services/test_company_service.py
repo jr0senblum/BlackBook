@@ -76,7 +76,7 @@ async def test_list_companies(company_service: CompanyService) -> None:
     await company_service.create_company(name="List Corp A")
     await company_service.create_company(name="List Corp B")
     result = await company_service.list_companies(limit=100, offset=0)
-    assert result["total"] >= 2
+    assert result["total"] == 2
     assert result["limit"] == 100
     assert result["offset"] == 0
     names = [item["name"] for item in result["items"]]
@@ -91,7 +91,7 @@ async def test_list_companies_pagination(company_service: CompanyService) -> Non
     result = await company_service.list_companies(limit=1, offset=0)
     assert result["limit"] == 1
     assert len(result["items"]) == 1
-    assert result["total"] >= 1
+    assert result["total"] == 1
 
 
 # ── update_company ───────────────────────────────────────────────
@@ -125,6 +125,32 @@ async def test_update_company_name_conflict(company_service: CompanyService) -> 
         await company_service.update_company(
             company_id=created["company_id"], fields={"name": "conflict target"}
         )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_same_name(company_service: CompanyService) -> None:
+    """Updating with the same name (no actual change) succeeds without
+    triggering the conflict check."""
+    created = await company_service.create_company(name="Same Name Corp")
+    result = await company_service.update_company(
+        company_id=created["company_id"],
+        fields={"name": "Same Name Corp", "mission": "Added mission"},
+    )
+    assert result["name"] == "Same Name Corp"
+    assert result["mission"] == "Added mission"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_same_name_different_case(
+    company_service: CompanyService,
+) -> None:
+    """Updating with the same name in different casing succeeds (no conflict)."""
+    created = await company_service.create_company(name="CaseTest Corp")
+    result = await company_service.update_company(
+        company_id=created["company_id"],
+        fields={"name": "casetest corp"},
+    )
+    assert result["name"] == "casetest corp"
 
 
 @pytest.mark.asyncio(loop_scope="session")

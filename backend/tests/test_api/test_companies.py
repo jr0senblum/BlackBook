@@ -57,7 +57,6 @@ async def test_create_company_duplicate_name(client: AsyncClient) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_create_company_unauthenticated(client: AsyncClient) -> None:
     """POST /companies without session returns 401."""
-    client.cookies.clear()
     response = await client.post(
         "/api/v1/companies",
         json={"name": "Unauth Corp"},

@@ -97,11 +97,14 @@ async def test_login_invalid_username(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_logout(client: AsyncClient) -> None:
-    """POST /auth/logout invalidates session."""
+    """POST /auth/logout invalidates session; subsequent requests are rejected."""
     await _login(client)
     logout_resp = await client.post("/api/v1/auth/logout")
     assert logout_resp.status_code == 200
     assert logout_resp.json() == {"ok": True}
+    # Verify session is actually invalid — a protected endpoint should 401.
+    protected_resp = await client.get("/api/v1/companies")
+    assert protected_resp.status_code == 401
 
 
 # ── password/change ──────────────────────────────────────────────
@@ -109,7 +112,7 @@ async def test_logout(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_password_change_success(client: AsyncClient) -> None:
-    """POST /auth/password/change with correct current password succeeds."""
+    """POST /auth/password/change succeeds; old password fails, new works."""
     await _login(client)
     response = await client.post(
         "/api/v1/auth/password/change",
@@ -118,11 +121,19 @@ async def test_password_change_success(client: AsyncClient) -> None:
     assert response.status_code == 200
     assert response.json() == {"ok": True}
 
-    # Change back so other tests still work
-    await client.post(
-        "/api/v1/auth/password/change",
-        json={"current_password": "newpassword456", "new_password": PASSWORD},
+    # Verify old password no longer works.
+    old_login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": USERNAME, "password": PASSWORD},
     )
+    assert old_login.status_code == 401
+
+    # Verify new password works.
+    new_login = await client.post(
+        "/api/v1/auth/login",
+        json={"username": USERNAME, "password": "newpassword456"},
+    )
+    assert new_login.status_code == 200
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -143,7 +154,6 @@ async def test_password_change_wrong_current(client: AsyncClient) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_protected_endpoint_without_session(client: AsyncClient) -> None:
     """Protected endpoint without session cookie returns 401."""
-    client.cookies.clear()
     response = await client.post("/api/v1/auth/logout")
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthenticated"

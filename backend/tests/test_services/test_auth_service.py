@@ -36,8 +36,11 @@ async def auth_service(db_session: AsyncSession) -> AuthService:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_set_password(auth_service: AuthService) -> None:
-    """First call succeeds."""
+    """First call creates a credential; verified by successful login."""
     await auth_service.set_password(USERNAME, PASSWORD)
+    # Verify the credential was actually persisted by logging in.
+    token = await auth_service.login(USERNAME, PASSWORD)
+    assert isinstance(token, str)
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -81,9 +84,14 @@ async def test_login_wrong_password(auth_service: AuthService) -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_validate_session_success(auth_service: AuthService) -> None:
-    """Valid session token passes validation."""
+    """Valid session token passes validation and remains valid on re-validation
+    (confirming last_active_at was updated)."""
     await auth_service.set_password(USERNAME, PASSWORD)
     token = await auth_service.login(USERNAME, PASSWORD)
+    # First validation — should not raise.
+    await auth_service.validate_session(token)
+    # Second validation — confirms last_active_at was refreshed by the
+    # first call, keeping the session alive.
     await auth_service.validate_session(token)
 
 
@@ -116,6 +124,25 @@ async def test_validate_session_expired(db_session: AsyncSession) -> None:
         await service.validate_session(token)
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_validate_session_expired_deletes_row(db_session: AsyncSession) -> None:
+    """Expired session is deleted from the DB — second call raises
+    UnauthenticatedError (not SessionExpiredError) because the row is gone."""
+    expired_settings = Settings(database_url="unused", session_timeout_minutes=0)
+    service = AuthService(
+        credential_repo=CredentialRepository(db_session),
+        session_repo=SessionRepository(db_session),
+        settings=expired_settings,
+    )
+    await service.set_password(USERNAME, PASSWORD)
+    token = await service.login(USERNAME, PASSWORD)
+    with pytest.raises(SessionExpiredError):
+        await service.validate_session(token)
+    # Row is now deleted — second call finds no session at all.
+    with pytest.raises(UnauthenticatedError):
+        await service.validate_session(token)
+
+
 # ── logout ───────────────────────────────────────────────────────
 
 
@@ -127,6 +154,22 @@ async def test_logout(auth_service: AuthService) -> None:
     await auth_service.logout(token)
     with pytest.raises(UnauthenticatedError):
         await auth_service.validate_session(token)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_logout_invalid_token(auth_service: AuthService) -> None:
+    """Logout with a non-existent token succeeds silently (idempotent)."""
+    await auth_service.logout("nonexistent_token_abc123")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_logout_already_invalidated(auth_service: AuthService) -> None:
+    """Logout on an already-logged-out token succeeds silently."""
+    await auth_service.set_password(USERNAME, PASSWORD)
+    token = await auth_service.login(USERNAME, PASSWORD)
+    await auth_service.logout(token)
+    # Second logout should not raise.
+    await auth_service.logout(token)
 
 
 # ── change_password ──────────────────────────────────────────────
