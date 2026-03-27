@@ -91,7 +91,7 @@ class AcceptResponse(BaseModel):
 
     fact_id: UUID
     status: str
-    entity_id: UUID | None
+    entity_id: str | None
 
 
 class DismissResponse(BaseModel):

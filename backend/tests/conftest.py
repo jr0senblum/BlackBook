@@ -1,4 +1,21 @@
-"""Fixtures: test DB, test client, per-test savepoint isolation."""
+"""Fixtures: test DB, test client, per-test savepoint isolation.
+
+Design note — SAVEPOINT rollback is the load-bearing isolation mechanism:
+
+  Test fixtures for repositories, services, and the HTTP client are all
+  ``loop_scope="session"`` scoped.  They hold thin wrappers (repos, services)
+  around the *same* ``db_session`` instance.  This is safe because:
+
+  1. ``db_session`` opens a connection-level transaction + SAVEPOINT per test.
+  2. On teardown the SAVEPOINT (and outer transaction) is rolled back, so every
+     test starts with a clean database — regardless of what earlier tests wrote.
+  3. The session-scoped repo/service objects carry no cached state; they just
+     delegate to ``self._db``.
+
+  If the savepoint rollback in ``db_session`` is ever removed or broken, *all*
+  tests will bleed into each other simultaneously, producing an obvious,
+  session-wide failure rather than subtle per-file issues.
+"""
 
 import asyncio
 from collections.abc import AsyncGenerator, Generator

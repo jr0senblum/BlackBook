@@ -182,7 +182,8 @@ async def test_routing_c_no_match_fails(
     ingestion_service: IngestionService,
 ) -> None:
     """c: with no matching company name raises RoutingError."""
-    content = "c: NoSuchCompany-xyz\np: Dave"
+    bogus_name = f"NoSuchCompany-{uuid4().hex[:8]}"
+    content = f"c: {bogus_name}\np: Dave"
     with pytest.raises(RoutingError, match="no company found with name"):
         await ingestion_service.ingest_upload(content, "notes.txt")
 
@@ -654,6 +655,15 @@ async def test_get_source_status(
     )
     status = await ingestion_service.get_source_status(str(source.id))
     assert status == "pending"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_source_status_not_found(
+    ingestion_service: IngestionService,
+) -> None:
+    """get_source_status with a non-existent ID raises SourceNotFoundError."""
+    with pytest.raises(SourceNotFoundError):
+        await ingestion_service.get_source_status(str(uuid4()))
 
 
 @pytest.mark.asyncio(loop_scope="session")

@@ -107,3 +107,24 @@ class InferenceApiError(DomainError):
     code = "inference_api_failed"
     status_code = 500
     message = "LLM API call failed"
+
+
+# --- Review / InferredFact exceptions ---
+
+
+class FactNotFoundError(DomainError):
+    code = "fact_not_found"
+    status_code = 404
+    message = "Inferred fact not found"
+
+
+class FactNotPendingError(DomainError):
+    code = "fact_not_pending"
+    status_code = 409
+    message = "Inferred fact is not in pending status"
+
+
+class FactCompanyMismatchError(DomainError):
+    code = "fact_company_mismatch"
+    status_code = 404
+    message = "Inferred fact does not belong to this company"

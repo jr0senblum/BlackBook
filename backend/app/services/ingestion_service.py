@@ -43,7 +43,7 @@ class InferenceServiceProtocol(Protocol):
 
 class ReviewServiceProtocol(Protocol):
     async def save_facts(
-        self, source_id: UUID, company_id: UUID, facts: list[Any]
+        self, source_id: str | UUID, company_id: str | UUID, facts: list[Any]
     ) -> None: ...
 
 
