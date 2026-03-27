@@ -1,8 +1,12 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { deleteCompany, getCompany, updateCompany } from "../api/companies";
+import { uploadSource } from "../api/sources";
+import { listPending } from "../api/pending";
 import { ApiRequestError } from "../api/client";
-import type { CompanyDetail } from "../types";
+import type { CompanyDetail, PendingFactItem } from "../types";
+import SourceList from "../components/SourceList";
+import PendingReviewQueue from "../components/PendingReviewQueue";
 
 function CompanyProfilePage() {
   const { id } = useParams<{ id: string }>();
@@ -24,7 +28,20 @@ function CompanyProfilePage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  async function fetchCompany() {
+  // Upload state.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadMsg, setUploadMsg] = useState("");
+  const [sourceRefreshKey, setSourceRefreshKey] = useState(0);
+
+  // Accepted entities (Phase 2 workaround — reads from inferred_facts).
+  // MUST be replaced in Phase 3 when dedicated entity endpoints exist.
+  const [acceptedPersons, setAcceptedPersons] = useState<PendingFactItem[]>([]);
+  const [acceptedTech, setAcceptedTech] = useState<PendingFactItem[]>([]);
+  const [acceptedProcesses, setAcceptedProcesses] = useState<PendingFactItem[]>([]);
+  const [acceptedAreas, setAcceptedAreas] = useState<PendingFactItem[]>([]);
+
+  const fetchCompany = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     try {
@@ -51,12 +68,30 @@ function CompanyProfilePage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [id, navigate]);
+
+  const fetchAcceptedEntities = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [persons, tech, procs, areas] = await Promise.all([
+        listPending(id, { status: "accepted", category: "person", limit: 200 }),
+        listPending(id, { status: "accepted", category: "technology", limit: 200 }),
+        listPending(id, { status: "accepted", category: "process", limit: 200 }),
+        listPending(id, { status: "accepted", category: "functional-area", limit: 200 }),
+      ]);
+      setAcceptedPersons(persons.items);
+      setAcceptedTech(tech.items);
+      setAcceptedProcesses(procs.items);
+      setAcceptedAreas(areas.items);
+    } catch {
+      // Non-critical — accepted entities are supplementary display.
+    }
+  }, [id]);
 
   useEffect(() => {
     void fetchCompany();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+    void fetchAcceptedEntities();
+  }, [fetchCompany, fetchAcceptedEntities]);
 
   async function handleSave(e: FormEvent) {
     e.preventDefault();
@@ -103,6 +138,34 @@ function CompanyProfilePage() {
     }
   }
 
+  async function handleUpload() {
+    const file = fileInputRef.current?.files?.[0];
+    if (!file || !id) return;
+    setUploading(true);
+    setUploadMsg("");
+    try {
+      await uploadSource(file, id);
+      setUploadMsg("File uploaded successfully. Processing...");
+      setSourceRefreshKey((k) => k + 1);
+      // Clear file input.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err) {
+      if (err instanceof ApiRequestError) {
+        setUploadMsg(err.error.message);
+      } else {
+        setUploadMsg("Upload failed.");
+      }
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function handleFactReviewed() {
+    // Refresh company (pending_count) and accepted entities.
+    void fetchCompany();
+    void fetchAcceptedEntities();
+  }
+
   if (loading) {
     return (
       <div className="page-content">
@@ -120,7 +183,7 @@ function CompanyProfilePage() {
     );
   }
 
-  if (!company) return null;
+  if (!company || !id) return null;
 
   return (
     <div className="page-content">
@@ -166,16 +229,116 @@ function CompanyProfilePage() {
             </p>
           </div>
 
+          {/* ── Upload Notes ──────────────────────────────────── */}
+          <hr />
+          <div className="detail-section">
+            <h3>Upload Notes</h3>
+            <div className="upload-area">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.md,.text"
+                disabled={uploading}
+              />
+              <button
+                onClick={() => void handleUpload()}
+                disabled={uploading}
+                style={{ marginLeft: 8 }}
+              >
+                {uploading ? "Uploading..." : "Upload"}
+              </button>
+            </div>
+            {uploadMsg && (
+              <p
+                className={
+                  uploadMsg.includes("success")
+                    ? "success-message"
+                    : "error-message"
+                }
+                style={{ marginTop: 8 }}
+              >
+                {uploadMsg}
+              </p>
+            )}
+          </div>
+
+          {/* ── Pending Review ────────────────────────────────── */}
+          {company.pending_count > 0 && (
+            <div className="detail-section">
+              <h3>Pending Review ({company.pending_count})</h3>
+              <PendingReviewQueue
+                companyId={id}
+                onFactReviewed={handleFactReviewed}
+              />
+            </div>
+          )}
+
+          {/* ── Sources ───────────────────────────────────────── */}
+          <hr />
+          <div className="detail-section">
+            <h3>Sources</h3>
+            <SourceList companyId={id} refreshKey={sourceRefreshKey} />
+          </div>
+
+          {/* ── People (Phase 2 workaround) ───────────────────── */}
+          <hr />
+          <div className="detail-section">
+            <h3>People</h3>
+            {acceptedPersons.length > 0 ? (
+              <ul className="entity-list">
+                {acceptedPersons.map((p) => (
+                  <li key={p.fact_id}>{p.inferred_value}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted">No people accepted yet.</p>
+            )}
+          </div>
+
+          {/* ── Functional Areas ──────────────────────────────── */}
+          <div className="detail-section">
+            <h3>Functional Areas</h3>
+            {acceptedAreas.length > 0 ? (
+              <ul className="entity-list">
+                {acceptedAreas.map((a) => (
+                  <li key={a.fact_id}>{a.inferred_value}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted">No functional areas accepted yet.</p>
+            )}
+          </div>
+
+          {/* ── Technologies ──────────────────────────────────── */}
+          <div className="detail-section">
+            <h3>Technologies</h3>
+            {acceptedTech.length > 0 ? (
+              <ul className="entity-list">
+                {acceptedTech.map((t) => (
+                  <li key={t.fact_id}>{t.inferred_value}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted">No technologies accepted yet.</p>
+            )}
+          </div>
+
+          {/* ── Processes ─────────────────────────────────────── */}
+          <div className="detail-section">
+            <h3>Processes</h3>
+            {acceptedProcesses.length > 0 ? (
+              <ul className="entity-list">
+                {acceptedProcesses.map((p) => (
+                  <li key={p.fact_id}>{p.inferred_value}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-muted">No processes accepted yet.</p>
+            )}
+          </div>
+
           {/* Placeholder sections for future phases */}
           <hr />
-          <div className="detail-section placeholder-section">
-            <h3>People</h3>
-            <p className="text-muted">Coming in Phase 2</p>
-          </div>
-          <div className="detail-section placeholder-section">
-            <h3>Sources</h3>
-            <p className="text-muted">Coming in Phase 2</p>
-          </div>
           <div className="detail-section placeholder-section">
             <h3>Coverage</h3>
             <p className="text-muted">Coming in Phase 3</p>

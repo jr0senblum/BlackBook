@@ -323,3 +323,217 @@ hr {
   max-width: 420px;
   width: 90%;
 }
+
+/* ── Status badges ────────────────────────────────────────────── */
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.status-pending {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.status-processing {
+  background: #cce5ff;
+  color: #004085;
+}
+
+.status-processed {
+  background: #d4edda;
+  color: #155724;
+}
+
+.status-failed {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+/* ── Category badges ──────────────────────────────────────────── */
+
+.category-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  background: #e9ecef;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.cat-person {
+  background: #d0ecf9;
+  color: #0c5460;
+}
+
+.cat-functional-area {
+  background: #d4edda;
+  color: #155724;
+}
+
+.cat-relationship {
+  background: #e2d9f3;
+  color: #3d1f6e;
+}
+
+.cat-technology {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.cat-process {
+  background: #fde2cc;
+  color: #7d4e00;
+}
+
+.cat-action-item {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+/* ── Small buttons ────────────────────────────────────────────── */
+
+.btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+}
+
+.btn-accept {
+  background: var(--success);
+  color: #fff;
+}
+
+.btn-accept:hover {
+  background: #157347;
+}
+
+.btn-dismiss {
+  background: var(--text-muted);
+  color: #fff;
+}
+
+.btn-dismiss:hover {
+  background: #5a6268;
+}
+
+/* ── Upload area ──────────────────────────────────────────────── */
+
+.upload-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.upload-area input[type="file"] {
+  font-size: 13px;
+  border: none;
+  padding: 0;
+  background: none;
+  width: auto;
+  box-shadow: none;
+}
+
+/* ── Pending review queue ─────────────────────────────────────── */
+
+.pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pending-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  gap: 12px;
+}
+
+.pending-item-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.pending-value {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pending-excerpt {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pending-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* ── Source detail panel ──────────────────────────────────────── */
+
+.source-detail-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.source-raw-content {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+
+/* ── Entity lists ─────────────────────────────────────────────── */
+
+.entity-list {
+  list-style: none;
+  padding: 0;
+}
+
+.entity-list li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.entity-list li:last-child {
+  border-bottom: none;
+}

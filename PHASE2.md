@@ -368,49 +368,49 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 
 ---
 
-## Unit 7: Frontend — File Upload + Source List + Pending Review Queue — PENDING
+## Unit 7: Frontend — File Upload + Source List + Pending Review Queue — COMPLETE ✅
 
 **Goal**: add file upload, source management, and pending review functionality to the frontend.
 
-- Create frontend API modules:
-  - `frontend/src/api/sources.ts`:
-    - `uploadSource(file: File, companyId?: string): Promise<SourceUploadResponse>` — uses `apiUpload`
-    - `listSources(companyId: string, params?): Promise<SourceListResponse>`
-    - `getSource(sourceId: string): Promise<SourceDetail>`
-    - `getSourceStatus(sourceId: string): Promise<SourceStatusResponse>`
-    - `retrySource(sourceId: string): Promise<SourceUploadResponse>`
-  - `frontend/src/api/pending.ts`:
-    - `listPending(companyId: string, params?: { status?, category?, limit?, offset? }): Promise<PendingFactListResponse>` — defaults to `status=pending`; also used with `status=accepted` to fetch accepted entities for profile display
-    - `acceptFact(companyId: string, factId: string): Promise<AcceptResponse>`
-    - `dismissFact(companyId: string, factId: string): Promise<DismissResponse>`
-- Add TypeScript types in `frontend/src/types/index.ts`:
-  - `SourceUploadResponse`, `SourceListItem`, `SourceListResponse`, `SourceDetail`, `SourceStatusResponse`
-  - `PendingFactItem`, `PendingFactListResponse`, `AcceptResponse`, `DismissResponse`
-- Create `frontend/src/components/SourceList.tsx`
-  - Display sources for a company: filename, type, received date, status
-  - Failed sources highlighted with error message and "Retry" button
-  - Status polling: while any source is `pending` or `processing`, poll `GET /sources/{id}/status` every 3 seconds and update display
-  - Clicking a source shows raw content in an expandable section or modal
-- Create `frontend/src/components/PendingReviewQueue.tsx`
-  - List pending facts for a company: category badge, inferred value, source excerpt
-  - "Accept" button per fact — calls `acceptFact()`, removes from list on success
-  - "Dismiss" button per fact — calls `dismissFact()`, removes from list on success
-  - Pagination if more than 50 pending facts
-- Create file upload component on `CompanyProfilePage.tsx`
-  - File input with "Upload Notes" button
-  - On upload: call `uploadSource(file, companyId)`, show success message, refresh source list
-  - Show upload progress / loading state
-- Update `CompanyProfilePage.tsx` to integrate new sections:
-  - Replace "People" placeholder with a simple list of accepted persons fetched via `listPending(companyId, { status: 'accepted', category: 'person' })`. **This is a Phase 2 workaround that MUST be replaced in Phase 3** when `GET /companies/{id}/people` is implemented, because this reads from `inferred_facts` (the inferred value) rather than from the `persons` table and will not reflect edits made directly to person records.
-  - Replace "Sources" placeholder with `<SourceList companyId={id} />`
-  - Add "Pending Review" section with `<PendingReviewQueue companyId={id} />` — shown prominently if `pending_count > 0`
-  - Show accepted technologies via `listPending(companyId, { status: 'accepted', category: 'technology' })` and processes via `listPending(companyId, { status: 'accepted', category: 'process' })` as simple lists
-  - Show accepted functional areas via `listPending(companyId, { status: 'accepted', category: 'functional-area' })`
-- Update `frontend/src/index.css` with styles for:
-  - Source list items with status badges (pending=yellow, processing=blue, processed=green, failed=red)
-  - Pending review queue with category badges
-  - File upload area
-  - Accept/dismiss button styles
+- [x] Create frontend API modules:
+  - [x] `frontend/src/api/sources.ts`:
+    - [x] `uploadSource(file: File, companyId?: string): Promise<SourceUploadResponse>` — uses `apiUpload`
+    - [x] `listSources(companyId: string, params?): Promise<SourceListResponse>`
+    - [x] `getSource(sourceId: string): Promise<SourceDetail>`
+    - [x] `getSourceStatus(sourceId: string): Promise<SourceStatusResponse>`
+    - [x] `retrySource(sourceId: string): Promise<SourceUploadResponse>`
+  - [x] `frontend/src/api/pending.ts`:
+    - [x] `listPending(companyId: string, params?: { status?, category?, limit?, offset? }): Promise<PendingFactListResponse>` — defaults to `status=pending`; also used with `status=accepted` to fetch accepted entities for profile display
+    - [x] `acceptFact(companyId: string, factId: string): Promise<AcceptResponse>`
+    - [x] `dismissFact(companyId: string, factId: string): Promise<DismissResponse>`
+- [x] Add TypeScript types in `frontend/src/types/index.ts`:
+  - [x] `SourceUploadResponse`, `SourceListItem`, `SourceListResponse`, `SourceDetail`, `SourceStatusResponse`
+  - [x] `PendingFactItem`, `PendingFactListResponse`, `AcceptResponse`, `DismissResponse`
+- [x] Create `frontend/src/components/SourceList.tsx`
+  - [x] Display sources for a company: filename, type, received date, status
+  - [x] Failed sources highlighted with error message and "Retry" button
+  - [x] Status polling: while any source is `pending` or `processing`, poll `GET /sources/{id}/status` every 3 seconds and update display
+  - [x] Clicking a source shows raw content in an expandable section or modal
+- [x] Create `frontend/src/components/PendingReviewQueue.tsx`
+  - [x] List pending facts for a company: category badge, inferred value, source excerpt
+  - [x] "Accept" button per fact — calls `acceptFact()`, removes from list on success
+  - [x] "Dismiss" button per fact — calls `dismissFact()`, removes from list on success
+  - [x] Pagination if more than 50 pending facts
+- [x] Create file upload component on `CompanyProfilePage.tsx`
+  - [x] File input with "Upload Notes" button
+  - [x] On upload: call `uploadSource(file, companyId)`, show success message, refresh source list
+  - [x] Show upload progress / loading state
+- [x] Update `CompanyProfilePage.tsx` to integrate new sections:
+  - [x] Replace "People" placeholder with a simple list of accepted persons fetched via `listPending(companyId, { status: 'accepted', category: 'person' })`. **This is a Phase 2 workaround that MUST be replaced in Phase 3** when `GET /companies/{id}/people` is implemented, because this reads from `inferred_facts` (the inferred value) rather than from the `persons` table and will not reflect edits made directly to person records.
+  - [x] Replace "Sources" placeholder with `<SourceList companyId={id} />`
+  - [x] Add "Pending Review" section with `<PendingReviewQueue companyId={id} />` — shown prominently if `pending_count > 0`
+  - [x] Show accepted technologies via `listPending(companyId, { status: 'accepted', category: 'technology' })` and processes via `listPending(companyId, { status: 'accepted', category: 'process' })` as simple lists
+  - [x] Show accepted functional areas via `listPending(companyId, { status: 'accepted', category: 'functional-area' })`
+- [x] Update `frontend/src/index.css` with styles for:
+  - [x] Source list items with status badges (pending=yellow, processing=blue, processed=green, failed=red)
+  - [x] Pending review queue with category badges
+  - [x] File upload area
+  - [x] Accept/dismiss button styles
 
 **Why seventh**: the frontend consumes all the backend work from Units 1–6. It cannot be tested against real data until the backend pipeline is working end-to-end.
 
@@ -457,7 +457,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 All of the following are true:
 
 - [x] PrefixParserService correctly normalizes all canonical keys, aliases, routing fields, and metadata (Unit 1 — 92 tests)
-- [ ] InferenceService constructs correct LLM prompts, validates responses, and applies retry policy (Unit 2 — deferred)
+- [x] InferenceService constructs correct LLM prompts, validates responses, and applies retry policy (Unit 2 — 59 tests)
 - [x] Company routing (nc/c/cid) works correctly with proper error messages on failure (Unit 4 — 12 routing tests)
 - [x] File upload stores the file and creates a Source record (Unit 4 — service + API tests)
 - [x] Background worker processes sources asynchronously (LLM extraction via InferenceService) (Unit 4 — 4 worker tests)
@@ -465,7 +465,7 @@ All of the following are true:
 - [x] Pending review queue lists all pending InferredFacts for a company (Unit 5 service + Unit 6 API — list_pending tests)
 - [x] Accept flow works correctly for ALL categories: person (name+title parse), functional-area (create row), action-item (promote to action_items), relationship (name resolution + stub creation), all others (mark accepted) (Unit 5 — 16 accept tests + Unit 6 API tests)
 - [x] Dismiss flow marks InferredFacts as dismissed (Unit 5 + Unit 6)
-- [ ] Company profile page shows: file upload, source list with status, pending review queue, accepted people/technologies/processes (Unit 7 — pending)
-- [x] All pytest tests pass (Phase 1 + Phase 2), repeatable across runs (297 passing)
+- [x] Company profile page shows: file upload, source list with status, pending review queue, accepted people/technologies/processes (Unit 7 — frontend build verified)
+- [x] All pytest tests pass (Phase 1 + Phase 2), repeatable across runs (364 passing)
 - [x] No regressions in Phase 1 functionality
 
