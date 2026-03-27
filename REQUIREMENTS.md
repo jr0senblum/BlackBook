@@ -1872,7 +1872,10 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 - Template CRUD: upload, list, delete; verify file stored at correct path
 - Cleanup worker: verify exports older than TTL are deleted; verify source files and templates are not affected
 
-**Exit criteria**: investigator can generate and download briefing documents and CGKRA narratives; templates are reusable; old exports are cleaned up automatically.
+**Deferred items landing in this phase:**
+- Config-driven canonical prefix map (§6.1): Phase 2 hardcodes `CANONICAL_MAP` as a Python constant. This phase should load the map from Settings (env var or JSON file) so the investigator can modify it without a code change. The hardcoded dict becomes the default fallback.
+
+**Exit criteria**: investigator can generate and download briefing documents and CGKRA narratives; templates are reusable; old exports are cleaned up automatically; canonical prefix map is configurable.
 
 ---
 

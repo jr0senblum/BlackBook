@@ -47,6 +47,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
     - Unrecognized prefix: emit as `ParsedLine(canonical_key="n", text=<full line>)` and log warning
     - Lines with no colon or no prefix match: emit as `ParsedLine(canonical_key="n", text=<full line>)`
   - PrefixParserService does NOT: call the LLM, validate routing against DB, enforce exactly-one routing field, split comma-separated values
+  - **Known deferral (§6.1)**: the spec requires `CANONICAL_MAP` to be "defined in configuration and modifiable without a code change." Phase 2 hardcodes it as a Python constant — the default map from §6.1. Config-driven loading (via Settings or a JSON file) is deferred to Phase 5 when the Settings page gains real functionality. The current constant serves as the default fallback when that work is done.
 
 - [ ] Write exhaustive tests in `backend/tests/test_services/test_prefix_parser_service.py`
   - Every canonical key resolves correctly (one test per alias group: `contact`→`who`, `from`→`who`, `d`→`date`, etc.)
@@ -173,7 +174,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 **Goal**: implement the orchestrator that ties PrefixParserService → company routing → InferenceService → fact persistence. Includes the upload endpoint and the background worker.
 
 - [ ] Create `backend/app/services/ingestion_service.py`
-  - Constructor accepts: `SourceRepository`, `InferredFactRepository`, `CompanyRepository`, `PrefixParserService`, `InferenceService`, `ReviewService` (for `save_facts`), `Settings`
+  - Constructor accepts: `SourceRepository`, `InferredFactRepository`, `CompanyRepository`, `InferenceService`, `ReviewService` (for `save_facts`), `Settings`. NOTE: `PrefixParserService` is not injected — `parse()` is a module-level function imported directly.
   - `async def ingest_upload(file_content: str, filename: str, company_id: str | None = None) -> str`:
     - Parse raw text via PrefixParserService → `ParsedSource`
     - Apply company routing (§9.7):
@@ -235,9 +236,9 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 
 - [ ] Wire dependency providers in `backend/app/dependencies.py`
   - `get_source_repository()`, `get_inferred_fact_repository()`
-  - `get_prefix_parser_service()` — stateless, no dependencies
+  - ~~`get_prefix_parser_service()`~~ — **NOT NEEDED**: Unit 1 implemented `parse()` as a module-level function, not a class. IngestionService imports it directly as `from app.services.prefix_parser_service import parse` — no dependency injection required.
   - `get_inference_service()` — needs settings + HTTP client
-  - `get_ingestion_service()` — needs all of the above + company_repo + review_service
+  - `get_ingestion_service()` — needs all of the above + company_repo + review_service (but NOT prefix_parser_service — it's a direct import)
   - `get_ingestion_queue()` — singleton queue instance
 
 - [ ] Write tests in `backend/tests/test_services/test_ingestion_service.py`
