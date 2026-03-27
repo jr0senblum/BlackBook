@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_api_url: str = ""
     llm_model: str = ""
-    llm_max_retries: int = 3
+    llm_max_attempts: int = 3  # total attempts (initial + retries)
 
     # File storage
     data_dir: str = "./data"

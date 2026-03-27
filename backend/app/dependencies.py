@@ -18,6 +18,7 @@ from app.repositories.session_repository import SessionRepository
 from app.repositories.source_repository import SourceRepository
 from app.services.auth_service import AuthService
 from app.services.company_service import CompanyService
+from app.services.inference_service import InferenceService
 from app.services.ingestion_service import IngestionService
 from app.services.review_service import ReviewService
 from app.workers.ingestion_worker import IngestionQueue, ingestion_queue
@@ -28,18 +29,11 @@ async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 
 
 # ---------------------------------------------------------------------------
-# Stub for InferenceService (not yet implemented — Unit 2).
+# Singleton InferenceService — shared across requests (stateless, uses
+# settings + injected HTTP client).
 # ---------------------------------------------------------------------------
 
-
-class _StubInferenceService:
-    async def extract_facts(self, lines):
-        raise NotImplementedError(
-            "InferenceService not yet implemented (Unit 2)"
-        )
-
-
-_stub_inference_service = _StubInferenceService()
+_inference_service = InferenceService(settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -82,13 +76,9 @@ async def get_inferred_fact_repository(
     return InferredFactRepository(db)
 
 
-async def get_inference_service() -> _StubInferenceService:
-    """Provide an InferenceService instance.
-
-    Returns a stub until Unit 2 is implemented. Will be replaced with the
-    real InferenceService that accepts Settings + HTTP client.
-    """
-    return _stub_inference_service
+async def get_inference_service() -> InferenceService:
+    """Provide the singleton InferenceService instance."""
+    return _inference_service
 
 
 def get_ingestion_queue() -> IngestionQueue:
@@ -118,18 +108,12 @@ def _build_review_service(db: AsyncSession) -> ReviewService:
 async def get_ingestion_service(
     db: AsyncSession = Depends(get_db),
 ) -> IngestionService:
-    """Provide an IngestionService instance.
-
-    InferenceService is still a stub (Unit 2). ReviewService is now the
-    real implementation. Upload/routing/source-CRUD paths work without
-    InferenceService; process_source (called by the background worker)
-    will use the real InferenceService once Unit 2 is implemented.
-    """
+    """Provide an IngestionService instance."""
     return IngestionService(
         source_repo=SourceRepository(db),
         inferred_fact_repo=InferredFactRepository(db),
         company_repo=CompanyRepository(db),
-        inference_service=_stub_inference_service,
+        inference_service=_inference_service,
         review_service=_build_review_service(db),
         ingestion_queue=ingestion_queue,
         settings=settings,
@@ -145,7 +129,7 @@ def build_ingestion_service(db: AsyncSession) -> IngestionService:
         source_repo=SourceRepository(db),
         inferred_fact_repo=InferredFactRepository(db),
         company_repo=CompanyRepository(db),
-        inference_service=_stub_inference_service,
+        inference_service=_inference_service,
         review_service=_build_review_service(db),
         ingestion_queue=ingestion_queue,
         settings=settings,

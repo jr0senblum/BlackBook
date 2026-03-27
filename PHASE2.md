@@ -71,55 +71,55 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 
 ---
 
-## Unit 2: InferenceService — LLM Prompt + Validation + Retry — DEFERRED
+## Unit 2: InferenceService — LLM Prompt + Validation + Retry — COMPLETE ✅
 
-**Status**: Skipped during sequential implementation. Units 3–6 have no runtime dependency on InferenceService (it is mocked/stubbed). Will be implemented before Unit 8 (integration verification).
+**Status**: Implementation complete. 59 tests passing. Dependencies wired in `dependencies.py`.
 
 **Goal**: implement the service that constructs the LLM prompt from parsed lines, calls the LLM API with retry, and validates the response. Does NOT write to the database — returns validated facts as Pydantic models.
 
-- Create `backend/app/schemas/inferred_fact.py`
-  - Define `LLMInferredFact` Pydantic model: `category: str`, `value: str`, `subordinate: str | None = None`, `manager: str | None = None`
-  - Validation: `category` must be in the valid enum; `value` must be non-empty; if `category == "relationship"`, `subordinate` and `manager` must both be non-empty
-  - Define request/response schemas for pending review endpoints (GET pending list, accept response, dismiss response) — these will be used in later units
-- Create `backend/app/services/inference_service.py`
-  - Constructor accepts: LLM provider config (from `settings`), an HTTP client (for dependency injection / mocking in tests)
-  - `async def extract_facts(lines: list[ParsedLine]) -> list[LLMInferredFact]`:
-    - Construct user message: format each `(canonical_key, text)` pair as `"canonical_key: text"`, one per line
-    - Construct system prompt: instruct the LLM to read tagged lines, extract InferredFacts, return only a JSON array (per §9.5)
-    - Call LLM API (Anthropic or OpenAI depending on `settings.llm_provider`)
-    - On API-level failure: apply retry policy (§9.5):
-      - Retry on HTTP 429, 500, 502, 503, 504, network timeout
-      - Do NOT retry on HTTP 400, 401
-      - Max 3 attempts total (initial + 2 retries)
-      - Exponential backoff with jitter: ~1s retry 1, ~2-4s retry 2
-      - For HTTP 429: use `Retry-After` header if present
-    - On success: validate response:
-      1. Parseable as JSON
-      2. Top-level is a non-empty array
-      3. Every element has a `category` matching the valid enum
-      4. Every element has a non-empty `value`
-      5. `relationship` elements have non-empty `subordinate` and `manager`
-    - On validation failure: raise `InferenceValidationError` with raw LLM response and error description
-    - On API failure after retries exhausted: raise `InferenceApiError` with descriptive message
-    - On success: return `list[LLMInferredFact]`
-- Create domain exceptions in `backend/app/exceptions.py` (or a separate ingestion exceptions section):
-  - `InferenceValidationError(DomainError)` — code: `inference_validation_failed`, status: 500
-  - `InferenceApiError(DomainError)` — code: `inference_api_failed`, status: 500
-- Write tests in `backend/tests/test_services/test_inference_service.py`
-  - Mock the HTTP client (never call a real LLM API in tests)
-  - Valid LLM response: returns list of `LLMInferredFact` objects
-  - Malformed JSON response: raises `InferenceValidationError`
-  - Empty array response: raises `InferenceValidationError`
-  - Missing `category` field: raises `InferenceValidationError`
-  - Missing `value` field: raises `InferenceValidationError`
-  - Unknown category: raises `InferenceValidationError`
-  - Relationship without `subordinate`: raises `InferenceValidationError`
-  - Relationship without `manager`: raises `InferenceValidationError`
-  - Valid response with markdown code fence wrapper: test whether service strips it (nice-to-have robustness)
-  - HTTP 429 → retries → eventual success
-  - HTTP 500 → retries → still fails → raises `InferenceApiError`
-  - HTTP 401 → no retry → raises `InferenceApiError` immediately
-  - Prompt construction: verify the user message format matches §9.5 (one line per ParsedLine)
+- [x] Create `backend/app/schemas/inferred_fact.py`
+  - [x] Define `LLMInferredFact` Pydantic model: `category: str`, `value: str`, `subordinate: str | None = None`, `manager: str | None = None`
+  - [x] Validation: `category` must be in the valid enum; `value` must be non-empty; if `category == "relationship"`, `subordinate` and `manager` must both be non-empty
+  - [x] Define request/response schemas for pending review endpoints (GET pending list, accept response, dismiss response) — these will be used in later units
+- [x] Create `backend/app/services/inference_service.py`
+  - [x] Constructor accepts: LLM provider config (from `settings`), an HTTP client (for dependency injection / mocking in tests)
+  - [x] `async def extract_facts(lines: list[ParsedLine]) -> list[LLMInferredFact]`:
+    - [x] Construct user message: format each `(canonical_key, text)` pair as `"canonical_key: text"`, one per line
+    - [x] Construct system prompt: instruct the LLM to read tagged lines, extract InferredFacts, return only a JSON array (per §9.5)
+    - [x] Call LLM API (Anthropic or OpenAI depending on `settings.llm_provider`)
+    - [x] On API-level failure: apply retry policy (§9.5):
+      - [x] Retry on HTTP 429, 500, 502, 503, 504, network timeout
+      - [x] Do NOT retry on HTTP 400, 401
+      - [x] Max 3 attempts total (initial + 2 retries)
+      - [x] Exponential backoff with jitter: ~1s retry 1, ~2-4s retry 2
+      - [x] For HTTP 429: use `Retry-After` header if present
+    - [x] On success: validate response:
+      1. [x] Parseable as JSON
+      2. [x] Top-level is a non-empty array
+      3. [x] Every element has a `category` matching the valid enum
+      4. [x] Every element has a non-empty `value`
+      5. [x] `relationship` elements have non-empty `subordinate` and `manager`
+    - [x] On validation failure: raise `InferenceValidationError` with raw LLM response and error description
+    - [x] On API failure after retries exhausted: raise `InferenceApiError` with descriptive message
+    - [x] On success: return `list[LLMInferredFact]`
+- [x] Create domain exceptions in `backend/app/exceptions.py` (or a separate ingestion exceptions section):
+  - [x] `InferenceValidationError(DomainError)` — code: `inference_validation_failed`, status: 500
+  - [x] `InferenceApiError(DomainError)` — code: `inference_api_failed`, status: 500
+- [x] Write tests in `backend/tests/test_services/test_inference_service.py`
+  - [x] Mock the HTTP client (never call a real LLM API in tests)
+  - [x] Valid LLM response: returns list of `LLMInferredFact` objects
+  - [x] Malformed JSON response: raises `InferenceValidationError`
+  - [x] Empty array response: raises `InferenceValidationError`
+  - [x] Missing `category` field: raises `InferenceValidationError`
+  - [x] Missing `value` field: raises `InferenceValidationError`
+  - [x] Unknown category: raises `InferenceValidationError`
+  - [x] Relationship without `subordinate`: raises `InferenceValidationError`
+  - [x] Relationship without `manager`: raises `InferenceValidationError`
+  - [x] Valid response with markdown code fence wrapper: test whether service strips it (nice-to-have robustness)
+  - [x] HTTP 429 → retries → eventual success
+  - [x] HTTP 500 → retries → still fails → raises `InferenceApiError`
+  - [x] HTTP 401 → no retry → raises `InferenceApiError` immediately
+  - [x] Prompt construction: verify the user message format matches §9.5 (one line per ParsedLine)
 
 **Why second**: InferenceService has a complex contract (§9.5) with validation, retry, and error handling. It depends only on `ParsedLine` from Unit 1. Testing it in isolation with mocked HTTP ensures correctness before wiring into the pipeline.
 
