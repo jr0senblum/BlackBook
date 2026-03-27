@@ -418,33 +418,35 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 
 ---
 
-## Unit 8: Integration Verification + Test Suite Completion — PENDING
+## Unit 8: Integration Verification + Test Suite Completion — COMPLETE ✅
 
 **Goal**: verify the full end-to-end flow works and all tests pass.
 
-- Write an end-to-end integration test (in `backend/tests/test_api/` or a dedicated `test_e2e/` file):
-  - Upload a file with prefix tags (nc:, p:, fn:, tech:, rel:, kp:, a:)
-  - Wait for source to reach `processed` status (poll status endpoint)
-  - Verify InferredFacts were created with correct categories
-  - Accept a person fact → verify persons row created
-  - Accept a functional-area fact → verify functional_areas row created
-  - Accept an action-item fact → verify action_items row created
-  - Accept a relationship fact → verify relationships row created, reports_to updated
-  - Accept a technology fact → verify marked accepted (no entity)
-  - Dismiss a fact → verify status is dismissed
-  - Verify company's pending_count decrements as facts are accepted/dismissed
-  - NOTE: this test requires mocking the LLM (InferenceService) to return canned responses
-- Verify `uvicorn app.main:app` starts cleanly with the background worker
-  - Worker starts via lifespan event
-  - No import errors, no startup exceptions
-- Run full test suite: `pytest` — ALL tests pass (Phase 1 + Phase 2)
-  - Confirm no regressions in all existing Phase 1 tests
-  - Confirm all new Phase 2 tests pass
-- Verify frontend manually against running backend:
-  - Log in → open a company → upload a file → see source appear with status updates → see pending facts → accept some → dismiss others → see accepted entities on company profile → retry a failed source
-- Verify test isolation:
-  - Run `pytest` twice in a row — both runs pass
-  - No leftover data between test runs (savepoint pattern from Phase 1 conftest)
+- [x] Write an end-to-end integration test (in `backend/tests/test_api/test_e2e_ingestion.py`):
+  - [x] Upload a file with prefix tags (nc:, p:, fn:, tech:, rel:, kp:, a:)
+  - [x] Process source with mocked InferenceService returning canned facts
+  - [x] Verify InferredFacts were created with correct categories
+  - [x] Accept a person fact → verify persons row created
+  - [x] Accept a functional-area fact → verify functional_areas row created
+  - [x] Accept an action-item fact → verify action_items row created
+  - [x] Accept a relationship fact → verify relationship row created, reports_to updated
+  - [x] Accept a technology fact → verify marked accepted (no entity)
+  - [x] Dismiss a fact → verify status is dismissed
+  - [x] Verify company's pending_count decrements as facts are accepted/dismissed
+  - [x] Test source list shows processed status after processing
+  - [x] Test failed source → retry → re-process → success flow
+- [x] Fix: `CompanyService.get_company()` and `update_company()` hardcoded `pending_count: 0` (Phase 1 placeholder) — replaced with `CompanyRepository.get_pending_count()` query
+- [x] Verify `uvicorn app.main:app` starts cleanly with the background worker
+  - [x] App creates successfully with 21 routes
+  - [x] All imports resolve without errors
+  - [x] Worker starts and stops via lifespan simulation
+- [x] Run full test suite: `pytest` — ALL 367 tests pass (Phase 1 + Phase 2)
+  - [x] No regressions in all existing Phase 1 tests
+  - [x] All new Phase 2 tests pass
+- [ ] Verify frontend manually against running backend (deferred — requires LLM API key configuration)
+- [x] Verify test isolation:
+  - [x] Run `pytest` twice in a row — both runs pass (367 + 367)
+  - [x] No leftover data between test runs (savepoint pattern from Phase 1 conftest)
 
 **Why last**: integration verification catches wiring issues, missing imports, and incorrect assumptions between units. It also validates that Phase 1 functionality is preserved (no regressions).
 
@@ -466,6 +468,6 @@ All of the following are true:
 - [x] Accept flow works correctly for ALL categories: person (name+title parse), functional-area (create row), action-item (promote to action_items), relationship (name resolution + stub creation), all others (mark accepted) (Unit 5 — 16 accept tests + Unit 6 API tests)
 - [x] Dismiss flow marks InferredFacts as dismissed (Unit 5 + Unit 6)
 - [x] Company profile page shows: file upload, source list with status, pending review queue, accepted people/technologies/processes (Unit 7 — frontend build verified)
-- [x] All pytest tests pass (Phase 1 + Phase 2), repeatable across runs (364 passing)
+- [x] All pytest tests pass (Phase 1 + Phase 2), repeatable across runs (367 passing)
 - [x] No regressions in Phase 1 functionality
 

@@ -78,6 +78,19 @@ class CompanyRepository:
         ]
         return items, total
 
+    async def get_pending_count(self, company_id: UUID) -> int:
+        """Return the number of pending inferred facts for a company."""
+        stmt = (
+            select(func.count())
+            .select_from(InferredFact)
+            .where(
+                InferredFact.company_id == company_id,
+                InferredFact.status == "pending",
+            )
+        )
+        result = await self._db.execute(stmt)
+        return result.scalar_one()
+
     async def update(self, company: Company, **kwargs: str | None) -> Company:
         """Update company fields. Only provided kwargs are changed."""
         for key, value in kwargs.items():

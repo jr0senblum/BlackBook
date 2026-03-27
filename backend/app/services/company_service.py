@@ -25,8 +25,7 @@ class CompanyService:
         company = await self._repo.get_by_id(company_id)
         if company is None:
             raise CompanyNotFoundError()
-        # For Phase 1, pending_count is always 0 (no ingestion yet).
-        # In production, this would be computed via the repo.
+        pending_count = await self._repo.get_pending_count(company_id)
         return {
             "id": company.id,
             "name": company.name,
@@ -34,7 +33,7 @@ class CompanyService:
             "vision": company.vision,
             "created_at": company.created_at,
             "updated_at": company.updated_at,
-            "pending_count": 0,
+            "pending_count": pending_count,
         }
 
     async def list_companies(self, limit: int = 100, offset: int = 0) -> dict:
@@ -72,6 +71,7 @@ class CompanyService:
         if fields:
             company = await self._repo.update(company, **fields)
 
+        pending_count = await self._repo.get_pending_count(company_id)
         return {
             "id": company.id,
             "name": company.name,
@@ -79,7 +79,7 @@ class CompanyService:
             "vision": company.vision,
             "created_at": company.created_at,
             "updated_at": company.updated_at,
-            "pending_count": 0,
+            "pending_count": pending_count,
         }
 
     async def delete_company(self, company_id: UUID) -> None:
