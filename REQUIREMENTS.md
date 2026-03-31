@@ -559,6 +559,17 @@ The LLM must return a JSON array conforming to the following schema. No other to
 }
 ```
 
+**Source line attribution:**
+
+When `save_facts` persists LLM-extracted facts as `inferred_facts` rows, each fact is attributed back to its originating input line from the `ParsedSource`. The matching algorithm:
+
+1. For each `LLMInferredFact`, find the `ParsedLine` in `ParsedSource.lines` whose `text` contains the fact's `value` (substring match, case-insensitive). For `relationship` facts, match against `subordinate` or `manager` instead.
+2. If exactly one line matches, store that line's full text (formatted as `"canonical_key: text"`) in the `source_line` column on the `inferred_facts` row.
+3. If multiple lines match, use the first match (order-preserving from the original document).
+4. If no line matches (e.g., the LLM rephrased the fact substantially), `source_line` is null.
+
+This attribution is best-effort — the LLM may rephrase, split, or combine input lines. The `source_line` value is informational context for the reviewer, not a structural dependency.
+
 **Sample input (post-normalization):**
 
 The following is a realistic block of text as it would be constructed by the InferenceService after PrefixParserService has stripped metadata and resolved all prefixes. This is the user message sent to the LLM; the system prompt (not shown here) instructs the LLM to return only the JSON array.
@@ -912,6 +923,15 @@ Note: Email ingestion is handled by the background IMAP poller — there is no R
   - `person`, `functional-area`, `action-item`: ranked list of existing same-category entities (persons, functional areas, action items) for the company; ordered by fuzzy similarity score against `inferred_value` descending
   - `relationship`: ranked list of existing **persons** for the company, provided twice — once scored against the `subordinate` field, once against the `manager` field; the response shape for relationship facts is `"candidates": { "subordinate": [...], "manager": [...] }` to support per-name disambiguation
   - All other categories: empty array — no entity disambiguation required
+
+**`source_excerpt` computation:**
+
+`source_excerpt` is derived at query time, not stored. The computation:
+
+1. If the fact's `source_line` is non-null: use `source_line` as the excerpt (the originating tagged line, e.g., `"p: Jane Smith, VP Engineering"`).
+2. If `source_line` is null: fall back to the first 200 characters of the source's `raw_content`, prefixed with `"[source] "` to indicate it is a generic fallback rather than a specific attribution.
+
+This gives the reviewer meaningful context — they see the original note line that produced the fact, not a generic blob of the entire document.
 
 **POST `/companies/{id}/pending/{fact_id}/accept`**
 
@@ -1273,6 +1293,7 @@ Indexes: `(company_id)`, `(status)`, `(received_at DESC)`, GIN `(search_vector)`
 | functional_area_id      | uuid        | yes  |                   | FK → functional_areas(id) ON DELETE SET NULL                                                                                                                                                                  |
 | category                | text        | no   |                   | CHECK IN ('functional-area', 'person', 'relationship', 'technology', 'process', 'cgkra-cs', 'cgkra-gw', 'cgkra-kp', 'cgkra-rm', 'cgkra-aop', 'swot-s', 'swot-w', 'swot-o', 'swot-th', 'action-item', 'other') |
 | inferred_value          | text        | no   |                   | raw value as returned by LLM; never overwritten                                                                                                                                                               |
+| source_line             | text        | yes  |                   | the originating tagged line from the parsed source (e.g. `"p: Jane Smith, VP Engineering"`); populated at `save_facts` time by matching each LLM fact back to its input ParsedLine; null if no match is found |
 | corrected_value         | text        | yes  |                   | investigator override; populated when status = 'corrected'                                                                                                                                                    |
 | status                  | text        | no   | 'pending'         | CHECK IN ('pending', 'accepted', 'corrected', 'merged', 'dismissed')                                                                                                                                          |
 | merged_into_entity_type | text        | yes  |                   | CHECK IN ('person', 'functional_area'); must be non-null when status = 'merged'                                                                                                                               |
