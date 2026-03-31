@@ -25,6 +25,7 @@ from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.person_repository import PersonRepository
 from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
+from app.services.prefix_parser_service import ParsedLine
 
 if TYPE_CHECKING:
     from app.schemas.inferred_fact import LLMInferredFact
@@ -57,11 +58,16 @@ class ReviewService:
         source_id: str | UUID,
         company_id: str | UUID,
         facts: list[LLMInferredFact],
+        lines: list[ParsedLine] | None = None,
     ) -> None:
         """Convert LLMInferredFact list to inferred_facts rows (status='pending').
 
         For relationship facts, inferred_value is stored as "subordinate > manager"
         for reliable re-parsing at accept time.
+
+        Source line attribution (§9.5): each fact is matched back to its
+        originating ParsedLine via substring match.  The matched line is stored
+        as ``source_line`` on the inferred_facts row.
 
         Accepts str or UUID for source_id/company_id — converts to UUID internally.
         """
@@ -75,15 +81,47 @@ class ReviewService:
             else:
                 inferred_value = fact.value
 
+            # Source line attribution: match fact back to originating ParsedLine
+            source_line = self._match_source_line(fact, lines) if lines else None
+
             rows.append({
                 "source_id": sid,
                 "company_id": cid,
                 "category": fact.category,
                 "inferred_value": inferred_value,
+                "source_line": source_line,
             })
 
         if rows:
             await self._inferred_fact_repo.create_many(rows)
+
+    @staticmethod
+    def _match_source_line(
+        fact: LLMInferredFact, lines: list[ParsedLine]
+    ) -> str | None:
+        """Find the originating ParsedLine for a fact (best-effort).
+
+        Matching strategy per §9.5:
+        - For relationship facts: match against subordinate or manager name.
+        - For all others: match against fact.value.
+        - Substring match, case-insensitive.
+        - First match wins (order-preserving from original document).
+        - Returns formatted as "canonical_key: text", or None if no match.
+        """
+        if fact.category == "relationship":
+            search_terms = [
+                t for t in (fact.subordinate, fact.manager) if t
+            ]
+        else:
+            search_terms = [fact.value]
+
+        for term in search_terms:
+            term_lower = term.lower()
+            for line in lines:
+                if term_lower in line.text.lower():
+                    return f"{line.canonical_key}: {line.text}"
+
+        return None
 
     # ── List pending / reviewed facts ───────────────────────────
 
@@ -112,11 +150,17 @@ class ReviewService:
 
         items: list[dict[str, Any]] = []
         for fact in facts:
-            # Get source excerpt (first 200 chars of raw_content)
-            source = await self._source_repo.get_by_id(fact.source_id)
-            source_excerpt = ""
-            if source is not None:
-                source_excerpt = (source.raw_content or "")[:200]
+            # Compute source_excerpt per §10.4:
+            # 1. Use source_line if available (originating tagged line).
+            # 2. Fall back to "[source] " + first 200 chars of raw_content.
+            if fact.source_line:
+                source_excerpt = fact.source_line
+            else:
+                source = await self._source_repo.get_by_id(fact.source_id)
+                if source is not None and source.raw_content:
+                    source_excerpt = f"[source] {source.raw_content[:200]}"
+                else:
+                    source_excerpt = ""
 
             items.append({
                 "fact_id": fact.id,

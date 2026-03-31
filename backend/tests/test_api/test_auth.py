@@ -148,6 +148,31 @@ async def test_password_change_wrong_current(client: AsyncClient) -> None:
     assert response.json()["error"]["code"] == "invalid_current_password"
 
 
+# ── /auth/me ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_me_authenticated(client: AsyncClient) -> None:
+    """GET /auth/me returns 200 when authenticated."""
+    await _login(client)
+    response = await client.get("/api/v1/auth/me")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_me_unauthenticated(client: AsyncClient) -> None:
+    """GET /auth/me returns 401 without session cookie."""
+    try:
+        client.cookies.clear()
+        response = await client.get("/api/v1/auth/me")
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "unauthenticated"
+    finally:
+        # Re-login to restore session cookie for subsequent tests.
+        await _login(client)
+
+
 # ── unauthenticated ──────────────────────────────────────────────
 
 

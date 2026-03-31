@@ -4,6 +4,10 @@
 
 import { apiRequest } from "./client";
 
+export async function checkSession() {
+  return apiRequest<{ ok: true }>("/auth/me", { method: "GET" });
+}
+
 export async function login(username: string, password: string) {
   return apiRequest<{ ok: true }>("/auth/login", {
     method: "POST",

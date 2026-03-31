@@ -55,11 +55,15 @@ The keys indicate the type of information:
 For each line, extract one or more structured facts. Return ONLY a JSON array.
 
 Rules:
-1. Each element must have "category" and "value" fields.
+1. Each element MUST have "category" and "value" fields. The "value" field is REQUIRED \
+for ALL categories, including relationships.
 2. Valid categories: functional-area, person, relationship, technology, process, \
 cgkra-cs, cgkra-gw, cgkra-kp, cgkra-rm, cgkra-aop, swot-s, swot-w, swot-o, \
 swot-th, action-item, other.
-3. For relationship facts, include "subordinate" and "manager" fields (both non-empty strings).
+3. For relationship facts, you MUST include ALL THREE fields: "value" (a human-readable \
+summary like "Jane Smith reports to Bob Jones"), "subordinate", and "manager" (both \
+non-empty strings). Example: {"category": "relationship", "value": "Jane Smith reports \
+to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones"}.
 4. For `n:` (note) lines, decompose into as many typed facts as the content supports. \
 Only use "other" for content that cannot be classified into any specific category.
 5. For CGKRA and SWOT lines, preserve the category from the tag exactly — do not \

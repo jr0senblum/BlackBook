@@ -43,7 +43,11 @@ class InferenceServiceProtocol(Protocol):
 
 class ReviewServiceProtocol(Protocol):
     async def save_facts(
-        self, source_id: str | UUID, company_id: str | UUID, facts: list[Any]
+        self,
+        source_id: str | UUID,
+        company_id: str | UUID,
+        facts: list[Any],
+        lines: list[ParsedLine],
     ) -> None: ...
 
 
@@ -145,9 +149,9 @@ class IngestionService:
             # Call LLM extraction
             facts = await self._inference_service.extract_facts(parsed.lines)
 
-            # Persist facts
+            # Persist facts (pass parsed lines for source_line attribution)
             await self._review_service.save_facts(
-                source.id, source.company_id, facts
+                source.id, source.company_id, facts, parsed.lines
             )
 
             # Mark processed

@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { ApiRequestError } from "../api/client";
-import { listCompanies } from "../api/companies";
+import { checkSession } from "../api/auth";
 
 interface AuthContextValue {
   /** null = still checking, true = authenticated, false = not authenticated */
@@ -30,8 +30,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     async function check() {
       try {
-        // Probe an authenticated endpoint with minimal payload.
-        await listCompanies(1, 0);
+        // Lightweight session check — no database query.
+        await checkSession();
         if (!cancelled) setAuthenticated(true);
       } catch (err) {
         if (!cancelled) {

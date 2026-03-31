@@ -189,6 +189,7 @@ class InferredFact(Base):
     functional_area_id = Column(UUID(as_uuid=True), ForeignKey("functional_areas.id", ondelete="SET NULL"), nullable=True)
     category = Column(Text, nullable=False)
     inferred_value = Column(Text, nullable=False)
+    source_line = Column(Text, nullable=True)
     corrected_value = Column(Text, nullable=True)
     status = Column(Text, nullable=False, server_default=text("'pending'"))
     merged_into_entity_type = Column(Text, nullable=True)

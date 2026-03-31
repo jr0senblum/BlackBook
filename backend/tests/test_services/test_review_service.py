@@ -25,6 +25,7 @@ from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
 from app.exceptions import FactCompanyMismatchError, FactNotFoundError, FactNotPendingError
 from app.schemas.inferred_fact import LLMInferredFact
+from app.services.prefix_parser_service import ParsedLine
 from app.services.review_service import ReviewService
 
 
@@ -103,15 +104,19 @@ async def _make_source(
 async def test_save_facts_creates_pending_rows(
     db_session: AsyncSession, review_service: ReviewService, fact_repo
 ):
-    """save_facts persists LLMInferredFact list as pending inferred_facts rows."""
+    """save_facts persists LLMInferredFact list as pending inferred_facts rows with source_line."""
     company = await _make_company(db_session)
     source = await _make_source(db_session, company.id)
 
+    lines = [
+        ParsedLine(canonical_key="p", text="Alice Brown, CTO"),
+        ParsedLine(canonical_key="t", text="Docker"),
+    ]
     facts = [
         LLMInferredFact(category="person", value="Alice Brown, CTO"),
         LLMInferredFact(category="technology", value="Docker"),
     ]
-    await review_service.save_facts(source.id, company.id, facts)
+    await review_service.save_facts(source.id, company.id, facts, lines)
 
     rows, total = await fact_repo.list_by_company(
         company.id, status="pending", limit=100, offset=0
@@ -124,6 +129,7 @@ async def test_save_facts_creates_pending_rows(
         assert r.status == "pending"
         assert r.source_id == source.id
         assert r.company_id == company.id
+        assert r.source_line is not None  # source_line populated via matching
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -134,6 +140,9 @@ async def test_save_facts_relationship_encoding(
     company = await _make_company(db_session)
     source = await _make_source(db_session, company.id)
 
+    lines = [
+        ParsedLine(canonical_key="rel", text="Jane Smith > Bob Jones"),
+    ]
     facts = [
         LLMInferredFact(
             category="relationship",
@@ -142,13 +151,14 @@ async def test_save_facts_relationship_encoding(
             manager="Bob Jones",
         ),
     ]
-    await review_service.save_facts(source.id, company.id, facts)
+    await review_service.save_facts(source.id, company.id, facts, lines)
 
     rows, _ = await fact_repo.list_by_company(
         company.id, status="pending", category="relationship", limit=100, offset=0
     )
     assert len(rows) == 1
     assert rows[0].inferred_value == "Jane Smith > Bob Jones"
+    assert rows[0].source_line == "rel: Jane Smith > Bob Jones"
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -164,6 +174,46 @@ async def test_save_facts_empty_list(
         company.id, status="pending", limit=1, offset=0
     )
     assert total == 0
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_source_line_null_when_no_match(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """source_line is null when LLM rephrases the fact and no ParsedLine matches."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    lines = [
+        ParsedLine(canonical_key="n", text="The team uses some kind of container orchestration"),
+    ]
+    # LLM rephrased substantially — no substring match
+    facts = [LLMInferredFact(category="technology", value="Kubernetes")]
+    await review_service.save_facts(source.id, company.id, facts, lines)
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    assert rows[0].source_line is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_without_lines_source_line_null(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """source_line is null when save_facts is called without lines (backward compat)."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [LLMInferredFact(category="technology", value="Redis")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    assert rows[0].source_line is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,20 +242,42 @@ async def test_list_pending_default_status(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_list_pending_with_source_excerpt(
+async def test_list_pending_source_excerpt_from_source_line(
     db_session: AsyncSession, review_service: ReviewService
 ):
-    """list_pending includes a source_excerpt from the source's raw_content."""
+    """list_pending uses source_line as source_excerpt when available."""
+    company = await _make_company(db_session)
+    source = await _make_source(
+        db_session, company.id, raw_content="t: Excerpt Tech\nn: other stuff"
+    )
+    lines = [
+        ParsedLine(canonical_key="t", text="Excerpt Tech"),
+        ParsedLine(canonical_key="n", text="other stuff"),
+    ]
+    facts = [LLMInferredFact(category="technology", value="Excerpt Tech")]
+    await review_service.save_facts(source.id, company.id, facts, lines)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert len(items) == 1
+    assert items[0]["source_excerpt"] == "t: Excerpt Tech"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_source_excerpt_fallback_no_source_line(
+    db_session: AsyncSession, review_service: ReviewService
+):
+    """list_pending falls back to '[source] ' + raw_content[:200] when source_line is null."""
     company = await _make_company(db_session)
     source = await _make_source(
         db_session, company.id, raw_content="Some important notes about the company"
     )
-    facts = [LLMInferredFact(category="technology", value="Excerpt Tech")]
+    # Save without lines — source_line will be null
+    facts = [LLMInferredFact(category="technology", value="Fallback Tech")]
     await review_service.save_facts(source.id, company.id, facts)
 
     items, _ = await review_service.list_pending(str(company.id))
     assert len(items) == 1
-    assert items[0]["source_excerpt"] == "Some important notes about the company"
+    assert items[0]["source_excerpt"] == "[source] Some important notes about the company"
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -274,7 +346,7 @@ async def test_list_pending_pagination(
 async def test_list_pending_source_deleted_fallback(
     db_session: AsyncSession, fact_repo,
 ):
-    """list_pending returns empty source_excerpt when source no longer exists.
+    """list_pending returns empty source_excerpt when source_line is null and source is missing.
 
     The source_id FK has CASCADE, so in practice this only happens with
     corrupt data. The defensive branch returns "" for source_excerpt.
@@ -282,8 +354,8 @@ async def test_list_pending_source_deleted_fallback(
     company = await _make_company(db_session)
     source = await _make_source(db_session, company.id)
 
-    # Create a fact, then build a ReviewService with a source_repo that
-    # returns None for get_by_id (simulating a missing source).
+    # Create a fact without source_line, then build a ReviewService with a
+    # source_repo that returns None for get_by_id (simulating a missing source).
     rows = await fact_repo.create_many([{
         "source_id": source.id,
         "company_id": company.id,
@@ -312,7 +384,7 @@ async def test_list_pending_source_deleted_fallback(
 async def test_list_pending_source_null_raw_content_fallback(
     db_session: AsyncSession, fact_repo,
 ):
-    """list_pending returns empty source_excerpt when raw_content is None.
+    """list_pending returns empty source_excerpt when source_line is null and raw_content is None.
 
     raw_content is NOT NULL in the schema, so this guards against bad DB state.
     """
