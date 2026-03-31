@@ -185,7 +185,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
     - Load Source record; set status → `processing`
     - Re-parse raw_content via PrefixParserService (to get `ParsedSource.lines`)
     - Call `InferenceService.extract_facts(parsed_source.lines)`
-    - On success: call `ReviewService.save_facts(source_id, company_id, facts)`; set source status → `processed`
+    - On success: call `ReviewService.save_facts(source_id, company_id, facts, parsed_source.lines)`; set source status → `processed`
     - On `InferenceValidationError`: set source status → `failed`; store raw LLM response and error message on Source record
     - On `InferenceApiError`: set source status → `failed`; store error message on Source record
   - `async def retry_source(source_id: str) -> None`:
@@ -267,13 +267,14 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 
 - Create `backend/app/services/review_service.py`
   - Constructor accepts: `InferredFactRepository`, `SourceRepository`, `PersonRepository`, `FunctionalAreaRepository`, `ActionItemRepository`, `RelationshipRepository`
-  - `async def save_facts(source_id: str, company_id: str, facts: list[LLMInferredFact]) -> None`:
+  - `async def save_facts(source_id: str, company_id: str, facts: list[LLMInferredFact], lines: list[ParsedLine]) -> None`:
     - Convert each `LLMInferredFact` to an `inferred_facts` row: `source_id`, `company_id`, `category`, `inferred_value=fact.value`, `status='pending'`
     - For `relationship` facts: store `subordinate` and `manager` values — see "Handle relationship `inferred_value` parsing" below
+    - Source line attribution (§9.5): match each fact back to its originating `ParsedLine` to populate `source_line`. For each fact, find the `ParsedLine` whose `text` contains the fact's `value` (substring, case-insensitive); for relationship facts match against `subordinate` or `manager`. Store the matched line formatted as `"canonical_key: text"`. If no match, `source_line` is null.
     - Bulk insert via `InferredFactRepository.create_many()`
   - `async def list_pending(company_id: str, *, status: str = "pending", category: str | None = None, limit: int, offset: int) -> tuple[list, int]`:
     - Query facts via `InferredFactRepository.list_by_company(company_id, status=status, category=category, limit=limit, offset=offset)`
-    - For each fact, load the associated Source via `SourceRepository.get_by_id(fact.source_id)` to obtain `source_excerpt` (first 200 chars of `source.raw_content`). NOTE: this is an N+1 query pattern acceptable at Phase 2 volumes; if performance becomes an issue, enhance the repository method to JOIN sources and return `raw_content` directly.
+    - For each fact, compute `source_excerpt` per §10.4: if the fact's `source_line` is non-null, use it as the excerpt; otherwise fall back to `"[source] " + source.raw_content[:200]` (loaded via `SourceRepository.get_by_id(fact.source_id)`). NOTE: the fallback path is an N+1 query pattern acceptable at Phase 2 volumes; if performance becomes an issue, enhance the repository method to JOIN sources and return `raw_content` directly.
     - For Phase 2: `candidates` is always an empty array (disambiguation is Phase 3)
     - Return items with `fact_id`, `category`, `inferred_value`, `status`, `source_id`, `source_excerpt`, `candidates: []`
   - `async def accept_fact(company_id: str, fact_id: str) -> str | None`:
@@ -298,8 +299,9 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
   - `FactNotPendingError(DomainError)` — code: `fact_not_pending`, status: 409
   - `FactCompanyMismatchError(DomainError)` — code: `fact_company_mismatch`, status: 404
 - Write tests in `backend/tests/test_services/test_review_service.py`
-  - `save_facts`: creates pending InferredFact rows
-  - `list_pending` with default status: returns only pending facts for the company
+  - `save_facts`: creates pending InferredFact rows with `source_line` populated via ParsedLine matching
+  - `save_facts`: `source_line` is null when no ParsedLine matches the fact's value
+  - `list_pending` with default status: returns only pending facts for the company with `source_excerpt` derived from `source_line` (or fallback)
   - `list_pending` with `status='accepted'`: returns only accepted facts
   - `list_pending` with `status='accepted'` and `category='person'`: returns only accepted person facts
   - `accept_fact` — **person**: parses "Jane Smith, VP Engineering" → creates person with name="Jane Smith", title="VP Engineering"
