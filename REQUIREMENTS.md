@@ -1796,6 +1796,7 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 - Pending review endpoints: `GET /companies/{id}/pending`, `POST .../accept`, `POST .../dismiss`
 - Accept flow for all categories per §10.4 — person (parse name+title, create persons row), functional-area (create functional_areas row), action-item (promote to action_items), relationship (name resolution + stub creation + relationships row), all others (mark accepted in place)
 - Dismiss flow: mark InferredFact `dismissed`
+- Source line attribution (§9.5): `save_facts` matches each LLM-extracted fact back to its originating ParsedLine and stores it in `source_line`; `list_pending` computes `source_excerpt` from `source_line` with fallback to raw source content
 
 **Frontend:**
 - File upload component on the company profile page
