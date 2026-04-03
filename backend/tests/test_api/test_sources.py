@@ -189,7 +189,7 @@ async def test_retry_non_failed_source_returns_409(
     response = await client.post(f"/api/v1/sources/{source_id}/retry")
     assert response.status_code == 409
     data = response.json()
-    assert data["error"]["code"] == "source_not_failed"
+    assert data["error"]["code"] == "state_conflict"
 
 
 @pytest.mark.asyncio(loop_scope="session")

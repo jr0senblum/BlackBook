@@ -81,7 +81,7 @@ class SourceNotFoundError(DomainError):
 
 
 class SourceNotFailedError(DomainError):
-    code = "source_not_failed"
+    code = "state_conflict"
     status_code = 409
     message = "Source is not in a failed state"
 
