@@ -300,7 +300,11 @@ class ReviewService:
     async def _accept_relationship(
         self, company_id: UUID, fact: Any
     ) -> str:
-        """Parse "subordinate > manager" from inferred_value, resolve names, create relationship."""
+        """Parse "subordinate > manager" from inferred_value, resolve names, create relationship.
+
+        If the (subordinate, manager) pair already exists, reuses the existing
+        relationship row (same dedup pattern as _accept_functional_area).
+        """
         value = fact.inferred_value
 
         if ">" not in value:
@@ -323,6 +327,13 @@ class ReviewService:
 
         # Resolve manager
         mgr_id = await self._resolve_person(company_id, mgr_name)
+
+        # Check for existing relationship (handles UNIQUE constraint uq_relationships_sub_mgr)
+        existing = await self._relationship_repo.get_by_sub_mgr(sub_id, mgr_id)
+        if existing is not None:
+            # Still update reports_to in case it was cleared
+            await self._person_repo.update_reports_to(sub_id, mgr_id)
+            return str(existing.id)
 
         # Create relationship row
         relationship = await self._relationship_repo.create(

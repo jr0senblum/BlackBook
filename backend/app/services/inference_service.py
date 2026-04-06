@@ -284,7 +284,7 @@ class InferenceService:
                     {"role": "user", "content": user_message},
                 ],
             },
-            timeout=60.0,
+            timeout=120.0,
         )
         response.raise_for_status()
         data = response.json()
@@ -310,8 +310,13 @@ class InferenceService:
                     {"role": "user", "content": user_message},
                 ],
                 "temperature": 0,
+                # Venice-specific: disable reasoning/thinking tokens to reduce
+                # latency. These are ignored by non-Venice OpenAI-compatible APIs.
+                "venice_parameters": {
+                    "disable_thinking": True,
+                },
             },
-            timeout=60.0,
+            timeout=120.0,
         )
         response.raise_for_status()
         data = response.json()

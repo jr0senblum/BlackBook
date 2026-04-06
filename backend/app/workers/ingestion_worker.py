@@ -47,6 +47,7 @@ class IngestionQueue:
     async def enqueue(self, source_id: str) -> None:
         """Add a source ID to the processing queue."""
         await self._queue.put(source_id)
+        logger.info("Enqueued source %s (qsize=%s)", source_id, self._queue.qsize())
 
     async def start_worker(self) -> None:
         """Start the background worker loop as an asyncio task."""
@@ -66,10 +67,13 @@ class IngestionQueue:
 
     async def _worker_loop(self) -> None:
         """Continuously dequeue and process source IDs."""
+        logger.info("Worker loop started")
         while True:
             source_id = await self._queue.get()
+            logger.info("Processing source %s", source_id)
             try:
                 await self._process_job(source_id)
+                logger.info("Finished processing source %s", source_id)
             except Exception:
                 logger.exception(
                     "Unhandled error processing source %s", source_id

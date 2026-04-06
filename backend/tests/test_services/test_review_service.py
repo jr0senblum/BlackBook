@@ -675,6 +675,61 @@ async def test_accept_relationship_creates_stub_persons(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_accept_relationship_duplicate_reuses_existing(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """accept_fact on duplicate relationship reuses existing row instead of crashing.
+
+    Regression test: previously, accepting two relationship facts with the same
+    (subordinate, manager) pair caused an IntegrityError on the
+    uq_relationships_sub_mgr UNIQUE constraint.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    sub_name = f"DupRelSub-{uuid4().hex[:6]}"
+    mgr_name = f"DupRelMgr-{uuid4().hex[:6]}"
+    sub = await person_repo.create(company_id=company.id, name=sub_name)
+    mgr = await person_repo.create(company_id=company.id, name=mgr_name)
+
+    # Create two identical relationship facts
+    facts = [
+        LLMInferredFact(
+            category="relationship",
+            value=f"{sub_name} reports to {mgr_name}",
+            subordinate=sub_name,
+            manager=mgr_name,
+        ),
+        LLMInferredFact(
+            category="relationship",
+            value=f"{sub_name} reports to {mgr_name}",
+            subordinate=sub_name,
+            manager=mgr_name,
+        ),
+    ]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="relationship", limit=100, offset=0
+    )
+    assert len(rows) == 2
+
+    # Accept the first — creates the relationship
+    entity_id_1 = await review_service.accept_fact(str(company.id), str(rows[0].id))
+    assert entity_id_1 is not None
+
+    # Accept the second — should reuse the existing relationship, NOT crash
+    entity_id_2 = await review_service.accept_fact(str(company.id), str(rows[1].id))
+    assert entity_id_2 is not None
+    assert entity_id_2 == entity_id_1  # Same relationship row reused
+
+    # Verify subordinate's reports_to is still set
+    updated_sub = await person_repo.get_by_id(sub.id)
+    assert updated_sub.reports_to_person_id == mgr.id
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_accept_relationship_malformed_value_no_separator(
     db_session: AsyncSession, review_service: ReviewService,
     fact_repo, person_repo,

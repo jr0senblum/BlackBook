@@ -12,6 +12,20 @@ class RelationshipRepository:
     def __init__(self, db: AsyncSession):
         self._db = db
 
+    async def get_by_sub_mgr(
+        self,
+        subordinate_person_id: UUID,
+        manager_person_id: UUID,
+    ) -> Relationship | None:
+        """Return a relationship matching (subordinate, manager), or None."""
+        result = await self._db.execute(
+            select(Relationship).where(
+                Relationship.subordinate_person_id == subordinate_person_id,
+                Relationship.manager_person_id == manager_person_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def create(
         self,
         *,
