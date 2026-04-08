@@ -1143,158 +1143,112 @@ async def test_list_pending_status_and_category_combined(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_duplicate_file_accept_deduplicates_persons(
-    db_session: AsyncSession, review_service: ReviewService,
-    fact_repo, person_repo,
+async def test_duplicate_file_save_facts_skips_existing_pending(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
 ):
-    """Processing the same file twice and accepting all should NOT create duplicate persons.
+    """save_facts skips facts that already exist as pending.
 
-    Round 1: save_facts + accept → creates person.
-    Round 2: save_facts + accept → should reuse the same person.
+    Round 1: save_facts creates pending rows.
+    Round 2: save_facts with identical facts creates zero new rows.
     """
     company = await _make_company(db_session)
     source1 = await _make_source(db_session, company.id)
 
-    person_name = f"DedupPerson-{uuid4().hex[:6]}"
-    person_value = f"{person_name}, CTO"
-
-    facts = [LLMInferredFact(category="person", value=person_value)]
-
-    # ── Round 1: save + accept ──
-    await review_service.save_facts(source1.id, company.id, facts)
-    rows, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="person", limit=100, offset=0
-    )
-    assert len(rows) == 1
-    entity_id_1 = await review_service.accept_fact(str(company.id), str(rows[0].id))
-    assert entity_id_1 is not None
-
-    # ── Round 2: "re-process" same file ──
-    source2 = await _make_source(db_session, company.id)
-    await review_service.save_facts(source2.id, company.id, facts)
-    rows2, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="person", limit=100, offset=0
-    )
-    assert len(rows2) == 1
-    entity_id_2 = await review_service.accept_fact(str(company.id), str(rows2[0].id))
-    assert entity_id_2 is not None
-
-    # Both should point to the same person
-    assert entity_id_2 == entity_id_1
-
-    # Only one person row should exist for this name
-    matches = await person_repo.get_by_name_iexact(company.id, person_name)
-    assert len(matches) == 1
-    assert matches[0].title == "CTO"
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_duplicate_file_accept_deduplicates_functional_areas(
-    db_session: AsyncSession, review_service: ReviewService,
-    fact_repo, area_repo,
-):
-    """Processing the same file twice: functional-area accept reuses existing."""
-    company = await _make_company(db_session)
-    source1 = await _make_source(db_session, company.id)
-
-    area_name = f"Platform-{uuid4().hex[:6]}"
-    facts = [LLMInferredFact(category="functional-area", value=area_name)]
-
-    # ── Round 1 ──
-    await review_service.save_facts(source1.id, company.id, facts)
-    rows, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="functional-area", limit=100, offset=0
-    )
-    entity_id_1 = await review_service.accept_fact(str(company.id), str(rows[0].id))
-
-    # ── Round 2 ──
-    source2 = await _make_source(db_session, company.id)
-    await review_service.save_facts(source2.id, company.id, facts)
-    rows2, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="functional-area", limit=100, offset=0
-    )
-    entity_id_2 = await review_service.accept_fact(str(company.id), str(rows2[0].id))
-
-    assert entity_id_2 == entity_id_1
-
-    areas = await area_repo.list_by_company(company.id)
-    matching = [a for a in areas if a.name.lower() == area_name.lower()]
-    assert len(matching) == 1
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_duplicate_file_accept_deduplicates_action_items(
-    db_session: AsyncSession, review_service: ReviewService,
-    fact_repo, action_repo,
-):
-    """Processing the same file twice: action-item accept reuses existing."""
-    company = await _make_company(db_session)
-    source1 = await _make_source(db_session, company.id)
-
-    description = f"Set up CI/CD-{uuid4().hex[:6]}"
-    facts = [LLMInferredFact(category="action-item", value=description)]
-
-    # ── Round 1 ──
-    await review_service.save_facts(source1.id, company.id, facts)
-    rows, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="action-item", limit=100, offset=0
-    )
-    entity_id_1 = await review_service.accept_fact(str(company.id), str(rows[0].id))
-
-    # ── Round 2 ──
-    source2 = await _make_source(db_session, company.id)
-    await review_service.save_facts(source2.id, company.id, facts)
-    rows2, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="action-item", limit=100, offset=0
-    )
-    entity_id_2 = await review_service.accept_fact(str(company.id), str(rows2[0].id))
-
-    assert entity_id_2 == entity_id_1
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_duplicate_file_accept_deduplicates_relationships(
-    db_session: AsyncSession, review_service: ReviewService,
-    fact_repo, person_repo, relationship_repo,
-):
-    """Processing the same file twice: relationship accept reuses existing."""
-    company = await _make_company(db_session)
-    source1 = await _make_source(db_session, company.id)
-
-    sub_name = f"DedupSub-{uuid4().hex[:6]}"
-    mgr_name = f"DedupMgr-{uuid4().hex[:6]}"
-
     facts = [
-        LLMInferredFact(
-            category="relationship",
-            value=f"{sub_name} reports to {mgr_name}",
-            subordinate=sub_name,
-            manager=mgr_name,
-        ),
+        LLMInferredFact(category="person", value=f"PendingDedup-{uuid4().hex[:6]}, CTO"),
+        LLMInferredFact(category="technology", value=f"Tech-{uuid4().hex[:6]}"),
     ]
 
     # ── Round 1 ──
     await review_service.save_facts(source1.id, company.id, facts)
-    rows, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="relationship", limit=100, offset=0
+    _, total1 = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
     )
-    entity_id_1 = await review_service.accept_fact(str(company.id), str(rows[0].id))
+    assert total1 == 2
 
-    # ── Round 2 ──
+    # ── Round 2: same facts, different source ──
     source2 = await _make_source(db_session, company.id)
     await review_service.save_facts(source2.id, company.id, facts)
-    rows2, _ = await fact_repo.list_by_company(
-        company.id, status="pending", category="relationship", limit=100, offset=0
+    _, total2 = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
     )
-    entity_id_2 = await review_service.accept_fact(str(company.id), str(rows2[0].id))
+    assert total2 == 2, f"Expected 2 (no new rows), got {total2}"
 
-    assert entity_id_2 == entity_id_1
 
-    # Only one person row per name
-    subs = await person_repo.get_by_name_iexact(company.id, sub_name)
-    mgrs = await person_repo.get_by_name_iexact(company.id, mgr_name)
-    assert len(subs) == 1
-    assert len(mgrs) == 1
+@pytest.mark.asyncio(loop_scope="session")
+async def test_duplicate_file_save_facts_skips_existing_accepted(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """save_facts skips facts that already exist as accepted.
+
+    Round 1: save + accept all.
+    Round 2: save_facts with identical facts creates zero new rows.
+    """
+    company = await _make_company(db_session)
+    source1 = await _make_source(db_session, company.id)
+
+    person_value = f"AcceptedDedup-{uuid4().hex[:6]}, CTO"
+    area_name = f"AreaDedup-{uuid4().hex[:6]}"
+
+    facts = [
+        LLMInferredFact(category="person", value=person_value),
+        LLMInferredFact(category="functional-area", value=area_name),
+    ]
+
+    # ── Round 1: save + accept ──
+    await review_service.save_facts(source1.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 2
+    for r in rows:
+        await review_service.accept_fact(str(company.id), str(r.id))
+
+    # Verify nothing pending
+    _, pending_after = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert pending_after == 0
+
+    # ── Round 2: same facts ──
+    source2 = await _make_source(db_session, company.id)
+    await review_service.save_facts(source2.id, company.id, facts)
+    _, total2 = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert total2 == 0, f"Expected 0 new pending rows, got {total2}"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_duplicate_file_dismissed_fact_can_be_re_added(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """save_facts allows re-creating a fact that was previously dismissed.
+
+    Dismissed facts are excluded from the dedup check — the user may want
+    to reconsider.
+    """
+    company = await _make_company(db_session)
+    source1 = await _make_source(db_session, company.id)
+
+    tech_value = f"DismissedTech-{uuid4().hex[:6]}"
+    facts = [LLMInferredFact(category="technology", value=tech_value)]
+
+    # ── Round 1: save + dismiss ──
+    await review_service.save_facts(source1.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    await review_service.dismiss_fact(str(company.id), str(rows[0].id))
+
+    # ── Round 2: same fact should be re-created (dismissed is excluded) ──
+    source2 = await _make_source(db_session, company.id)
+    await review_service.save_facts(source2.id, company.id, facts)
+    _, total2 = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert total2 == 1, "Dismissed fact should be re-creatable"
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -1302,10 +1256,11 @@ async def test_duplicate_file_full_scenario(
     db_session: AsyncSession, review_service: ReviewService,
     fact_repo, person_repo, area_repo, action_repo, relationship_repo,
 ):
-    """Full scenario: process identical file, accept all, re-process, re-accept.
+    """Full scenario: process identical file, accept all, re-process.
 
-    Simulates a user uploading the same notes file twice and accepting every
-    fact both times.  No duplicate entities should be created.
+    Simulates a user uploading the same notes file twice.  After accepting
+    all facts from the first upload, save_facts on the second upload should
+    produce zero new pending facts.
     """
     company = await _make_company(db_session)
 
@@ -1340,32 +1295,16 @@ async def test_duplicate_file_full_scenario(
     )
     assert total1 == 5
 
-    entity_ids_1 = {}
     for fact_row in pending1:
-        eid = await review_service.accept_fact(str(company.id), str(fact_row.id))
-        entity_ids_1[fact_row.category] = eid
+        await review_service.accept_fact(str(company.id), str(fact_row.id))
 
-    # ── Round 2: save same facts + accept all ──
+    # ── Round 2: save same facts — should produce zero new pending ──
     source2 = await _make_source(db_session, company.id)
     await review_service.save_facts(source2.id, company.id, facts)
-    pending2, total2 = await fact_repo.list_by_company(
+    _, total2 = await fact_repo.list_by_company(
         company.id, status="pending", limit=100, offset=0
     )
-    assert total2 == 5
-
-    entity_ids_2 = {}
-    for fact_row in pending2:
-        eid = await review_service.accept_fact(str(company.id), str(fact_row.id))
-        entity_ids_2[fact_row.category] = eid
-
-    # ── Verify: same entity IDs returned (dedup worked) ──
-    assert entity_ids_2["person"] == entity_ids_1["person"]
-    assert entity_ids_2["functional-area"] == entity_ids_1["functional-area"]
-    assert entity_ids_2["action-item"] == entity_ids_1["action-item"]
-    assert entity_ids_2["relationship"] == entity_ids_1["relationship"]
-    # technology creates no entity — both should be None
-    assert entity_ids_1["technology"] is None
-    assert entity_ids_2["technology"] is None
+    assert total2 == 0, f"Expected 0 new pending facts, got {total2}"
 
     # ── Verify: no duplicate entity rows ──
     persons = await person_repo.get_by_name_iexact(company.id, person_name)

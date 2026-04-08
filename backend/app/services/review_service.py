@@ -81,6 +81,19 @@ class ReviewService:
             else:
                 inferred_value = fact.value
 
+            # Dedup: skip if a non-dismissed fact with the same
+            # (company, category, value) already exists.
+            already_exists = await self._inferred_fact_repo.exists_by_value(
+                cid, fact.category, inferred_value
+            )
+            if already_exists:
+                logger.info(
+                    "Skipping duplicate fact: category=%s value=%s",
+                    fact.category,
+                    inferred_value[:80],
+                )
+                continue
+
             # Source line attribution: match fact back to originating ParsedLine
             source_line = self._match_source_line(fact, lines) if lines else None
 

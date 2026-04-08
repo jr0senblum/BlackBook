@@ -29,6 +29,29 @@ class InferredFactRepository:
             await self._db.refresh(row)
         return rows
 
+    async def exists_by_value(
+        self,
+        company_id: UUID,
+        category: str,
+        inferred_value: str,
+    ) -> bool:
+        """Return True if a non-dismissed fact with this (company, category, value) exists.
+
+        Matches case-insensitively.  Used to skip duplicate facts when the same
+        source is uploaded twice.
+        """
+        result = await self._db.execute(
+            select(func.count())
+            .select_from(InferredFact)
+            .where(
+                InferredFact.company_id == company_id,
+                InferredFact.category == category,
+                func.lower(InferredFact.inferred_value) == inferred_value.lower(),
+                InferredFact.status.in_(("pending", "accepted", "corrected", "merged")),
+            )
+        )
+        return result.scalar_one() > 0
+
     async def get_by_id(self, fact_id: UUID) -> InferredFact | None:
         """Return an inferred fact by primary key, or None."""
         result = await self._db.execute(
