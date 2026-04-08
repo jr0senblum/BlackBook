@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import ActionItem
@@ -42,3 +42,20 @@ class ActionItemRepository:
             select(ActionItem).where(ActionItem.id == item_id)
         )
         return result.scalar_one_or_none()
+
+    async def get_by_description_iexact(
+        self, company_id: UUID, description: str
+    ) -> ActionItem | None:
+        """Return an open action item matching (company_id, description) case-insensitively.
+
+        Only matches open items — completed items are not considered duplicates.
+        Returns the first match or None.
+        """
+        result = await self._db.execute(
+            select(ActionItem).where(
+                ActionItem.company_id == company_id,
+                ActionItem.status == "open",
+                func.lower(ActionItem.description) == description.lower(),
+            )
+        )
+        return result.scalars().first()

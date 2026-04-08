@@ -66,6 +66,21 @@ class PersonRepository:
         )
         return list(result.scalars().all())
 
+    async def update_title(
+        self, person_id: UUID, title: str
+    ) -> Person:
+        """Update the title for a person.
+
+        Raises ValueError if the person_id does not exist.
+        """
+        person = await self.get_by_id(person_id)
+        if person is None:
+            raise ValueError(f"Person not found: {person_id}")
+        person.title = title
+        await self._db.flush()
+        await self._db.refresh(person)
+        return person
+
     async def update_reports_to(
         self, person_id: UUID, manager_person_id: UUID | None
     ) -> Person:

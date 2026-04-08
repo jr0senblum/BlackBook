@@ -249,7 +249,12 @@ class ReviewService:
     # ── Private accept handlers ─────────────────────────────────
 
     async def _accept_person(self, company_id: UUID, fact: Any) -> str:
-        """Parse inferred_value as "name, title" and create a person."""
+        """Parse inferred_value as "name, title" and create a person.
+
+        If a person with the same name already exists for this company
+        (case-insensitive match), reuses the existing row.  If the existing
+        person has no title and the fact provides one, the title is updated.
+        """
         value = fact.inferred_value
         if "," in value:
             # Split on first comma: left = name, right = title
@@ -259,6 +264,15 @@ class ReviewService:
         else:
             name = value.strip()
             title = None
+
+        # Check for existing person (dedup on name within company)
+        matches = await self._person_repo.get_by_name_iexact(company_id, name)
+        if matches:
+            existing = matches[0]
+            # Back-fill title if the existing person has none
+            if title and not existing.title:
+                await self._person_repo.update_title(existing.id, title)
+            return str(existing.id)
 
         person = await self._person_repo.create(
             company_id=company_id,
@@ -288,7 +302,20 @@ class ReviewService:
     async def _accept_action_item(
         self, company_id: UUID, fact: Any
     ) -> str:
-        """Create an action item from the fact."""
+        """Create an action item from the fact.
+
+        If an open action item with the same description already exists for
+        this company (case-insensitive match), reuses the existing row.
+        """
+        description = fact.inferred_value.strip()
+
+        # Check for existing open action item with same description
+        existing = await self._action_item_repo.get_by_description_iexact(
+            company_id, description
+        )
+        if existing is not None:
+            return str(existing.id)
+
         action_item = await self._action_item_repo.create(
             company_id=company_id,
             description=fact.inferred_value,
