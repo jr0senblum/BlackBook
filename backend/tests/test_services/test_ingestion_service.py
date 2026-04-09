@@ -322,6 +322,11 @@ async def test_upload_creates_source_with_metadata(
     assert source.type == "upload"
     assert source.filename_or_subject == "meeting.txt"
     assert source.status == "pending"
+    # file_path is set after Source creation (relative to data_dir)
+    assert source.file_path is not None
+    assert source.file_path.startswith("sources/")
+    assert source.file_path.endswith("_meeting.txt")
+    assert source_id in source.file_path
 
 
 @pytest.mark.asyncio(loop_scope="session")

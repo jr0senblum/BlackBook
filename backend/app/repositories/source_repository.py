@@ -100,3 +100,14 @@ class SourceRepository:
         await self._db.flush()
         await self._db.refresh(source)
         return source
+
+    async def update_file_path(self, source_id: UUID, file_path: str) -> None:
+        """Set the file_path on an existing source record.
+
+        Raises ValueError if the source_id does not exist.
+        """
+        source = await self.get_by_id(source_id)
+        if source is None:
+            raise ValueError(f"Source not found: {source_id}")
+        source.file_path = file_path
+        await self._db.flush()

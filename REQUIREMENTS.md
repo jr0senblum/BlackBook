@@ -159,7 +159,7 @@ What the system must do.
 - Email ingestion: receive and parse emails sent to a designated address, extract text and attachments for processing
 - Document ingestion: accept uploaded files (PDF, Word, text, etc.) and extract their contents for processing
 - Source management: list all ingested sources for a company with type, date, and processing status; surface failed ingestions with failure reason; allow the investigator to view raw source content and re-trigger processing of any failed source
-- AI inference engine: analyze ingested content to extract and infer people, titles, reporting relationships, org structure, functional areas, technology stack, and processes based on tagged inputs; organize investigator-tagged notes into CGKRA and SWOT categories based on prefix tags — neither CGKRA nor SWOT signals are inferred by the AI. The LLM output contract is:
+- AI inference engine: analyze ingested content to extract and infer people, titles, reporting relationships, org structure, functional areas, technology stack, processes, CGKRA signals, and SWOT signals; when prefix tags are present, use them to guide extraction; when no tags are present, extract facts directly from raw text using company context (previously accepted facts) to improve accuracy; when both tagged and untagged content are present, perform hybrid extraction (tagged pass + raw pass on remaining text); all extracted facts are subject to investigator review before committing to the company profile. The LLM output contract is:
   - **Output format**: a JSON array of InferredFact objects; each object must contain a `category` field (one of the valid InferredFact categories defined in 6.3) and a `value` field (non-empty string); relationship facts must additionally carry `subordinate` and `manager` fields reflecting the `rel: A > B` syntax. Example:
     ```json
     [
@@ -292,7 +292,7 @@ Nice-to-have:
 
 **Key entities and storage requirements:**
 
-- **Company** — one record per discovered company; stores name, mission, and vision; technology and process facts are not direct fields — they are InferredFacts with category `technology` or `process`, linked to the company via the `inferred_facts` table
+- **Company** — one record per discovered company; stores name, mission, vision, and `llm_context_mode` (controls what company context is sent to the LLM during raw/hybrid extraction: `"none"` = no context, `"accepted_facts"` = accepted/corrected inferred facts [default], `"full"` = accepted facts + raw content of prior processed sources); technology and process facts are not direct fields — they are InferredFacts with category `technology` or `process`, linked to the company via the `inferred_facts` table
 - **FunctionalArea** — a named area of the business (e.g., Engineering, Product, Sales, Finance, Operations); linked to a Company; inferred from ingested content or manually created; serves as the primary organizational grouping for people, facts, action items, and CGKRA synthesis
 - **Person** — name, title, and reporting relationships; linked to a Company and to a primary FunctionalArea; a person may appear under multiple functional areas if their role spans them
 - **Source** — represents a single ingested unit (one email or one uploaded file); stores type (email | upload), raw content, filename or subject line, received timestamp, and processing status (pending | processing | processed | failed); linked to a Company
@@ -437,8 +437,8 @@ Background Workers (Python asyncio — same service layer, async entry point;
 - **Frontend**: React/TypeScript SPA served directly by the FastAPI backend; communicates exclusively with the Composition Layer via REST
 - **Composition Layer**: FastAPI route handlers; responsible for assembling responses from multiple services into the shape the frontend needs (e.g., a company profile page composes Company + Person + CGKRA + ActionItem + Coverage); owns no business logic
 - **Service Layer**: versioned Python service classes containing all business logic — InferredFact state machine, company routing, CGKRA aggregation, prefix normalization, entity disambiguation, fuzzy matching; each service has a single well-defined responsibility:
-  - **IngestionService**: orchestrates the full ingestion pipeline (calls PrefixParserService → applies company routing algorithm §9.7 → calls InferenceService); owns source CRUD (listing, raw content retrieval, status); handles retry logic for failed sources (UC 18); entry point for both the upload REST path and the background IMAP email poller
-  - **InferenceService**: LLM extraction — constructs prompt from `ParsedSource.lines`, calls LLM API with retry (§9.5), validates response, returns validated facts as Pydantic models; does not write to the database; called exclusively by IngestionService
+  - **IngestionService**: orchestrates the full ingestion pipeline (calls PrefixParserService → applies company routing algorithm §9.7 → calls InferenceService for tagged, raw, or hybrid extraction based on whether tagged lines are present → assembles company context per `llm_context_mode` for raw/hybrid passes); owns source CRUD (listing, raw content retrieval, status); handles retry logic for failed sources (UC 18); entry point for both the upload REST path and the background IMAP email poller
+  - **InferenceService**: LLM extraction — two entry points: `extract_facts(lines)` constructs prompt from `ParsedSource.lines` for tagged extraction; `extract_facts_raw(raw_text, company_context)` extracts facts from unannotated free-form text with optional company context for disambiguation; both call LLM API with retry (§9.5), validate response, and return validated facts as Pydantic models; does not write to the database; does not access the database (company context is assembled and passed in by IngestionService); called exclusively by IngestionService
   - **ReviewService**: owns the InferredFact lifecycle; `save_facts(facts)` persists InferredFacts returned by InferenceService (called by IngestionService after inference); owns the pending review queue (`GET /companies/{id}/pending`) and all review action endpoints (accept, correct, merge, dismiss); on accept/correct, delegates entity creation to the appropriate domain service (PersonService, ActionItemService, etc.) — never calls another service's repository directly; owns `InferredFactRepository`
   - **PrefixParserService**: normalises raw source text into a `ParsedSource` struct; no LLM calls, no DB access; called exclusively by IngestionService
 - **Repository Layer**: SQLAlchemy models and query methods; pure data access with no business logic; the only layer that touches the database directly
@@ -448,7 +448,13 @@ Background Workers (Python asyncio — same service layer, async entry point;
 ### 9.3 Data Flow
 
 **Ingestion (email or upload):**
-Email/file → IngestionService → PrefixParserService (normalize tags) → `ParsedSource` → IngestionService (apply company routing algorithm §9.7; store `who`/`date`/`src` on Source record; fail fast if routing invalid) → InferenceService (receives `ParsedSource.lines`; LLM extraction; returns validated facts as Pydantic models) → IngestionService calls ReviewService.save_facts(facts) → ReviewService writes Source + InferredFacts via InferredFactRepository → pending review queue surfaced on next company access
+Email/file → IngestionService → PrefixParserService (normalize tags) → `ParsedSource` → IngestionService (apply company routing algorithm §9.7; store `who`/`date`/`src` on Source record; fail fast if routing invalid) → IngestionService determines extraction mode:
+
+- **Tagged mode** (tagged lines present, no untagged content): InferenceService.extract_facts(lines) — single LLM pass on tagged lines
+- **Raw mode** (no tagged lines found): IngestionService assembles company context per `llm_context_mode` (§6.3) → InferenceService.extract_facts_raw(raw_text, company_context) — single LLM pass on full source text
+- **Hybrid mode** (both tagged lines and untagged content present): InferenceService.extract_facts(lines) for tagged pass, then IngestionService assembles company context → InferenceService.extract_facts_raw(untagged_text, company_context) for raw pass; results from both passes are combined
+
+→ IngestionService calls ReviewService.save_facts(facts) → ReviewService writes Source + InferredFacts via InferredFactRepository (dedup applied at save time) → pending review queue surfaced on next company access
 
 **Review:**
 Investigator accepts/corrects/merges/dismisses → ReviewService (InferredFact state transition, category branching) → domain service for entity creation (PersonService.create_person(), ActionItemService.create_action_item(), etc.) → ReviewService updates InferredFact status via InferredFactRepository
@@ -469,15 +475,61 @@ Frontend triggers → ExportService / CGKRAService → LLM API (for narrative) �
 
 The InferenceService is the highest-risk component in the system — if extraction is unreliable, no downstream feature works correctly. This section specifies the LLM integration contract the service must implement.
 
-**Input preparation:**
+**Input preparation — tagged mode (`extract_facts`):**
 
-InferenceService receives a `ParsedSource` object from PrefixParserService (see §9.6). It uses `ParsedSource.lines` — the list of `(canonical_key, text)` pairs that excludes all metadata and routing keys — to construct the LLM user message. The `who`, `date`, `src`, and `nc` fields are never passed to InferenceService; they are consumed by the IngestionService before InferenceService is called.
+InferenceService receives a list of `ParsedLine` objects from IngestionService (originally from PrefixParserService, see §9.6). It uses these `(canonical_key, text)` pairs — which exclude all metadata and routing keys — to construct the LLM user message. The `who`, `date`, `src`, and `nc` fields are never passed to InferenceService; they are consumed by the IngestionService before InferenceService is called.
 
-The LLM user message is constructed by formatting each `(canonical_key, text)` pair as `canonical_key: text`, one per line. The system prompt instructs the LLM to: read each tagged line and extract its content into a typed InferredFact; for `n:` (plain note) lines, extract any identifiable facts of any category, with unextractable remainder stored as `other`; return only a JSON array — no prose, no explanation, no markdown wrapper.
+The LLM user message is constructed by formatting each `(canonical_key, text)` pair as `canonical_key: text`, one per line. The system prompt (`SYSTEM_PROMPT`) instructs the LLM to: read each tagged line and extract its content into a typed InferredFact; for `n:` (plain note) lines, extract any identifiable facts of any category, with unextractable remainder stored as `other`; return only a JSON array — no prose, no explanation, no markdown wrapper.
+
+**Input preparation — raw mode (`extract_facts_raw`):**
+
+InferenceService also accepts unannotated free-form text via `extract_facts_raw(raw_text, company_context)`. This entry point is used when the prefix parser finds no tagged lines (raw mode) or as the second pass in hybrid mode on the untagged portion of the source.
+
+The `raw_text` is the source content with routing/metadata lines stripped by IngestionService. The `company_context` is an optional string assembled by IngestionService from the company's existing data, providing the LLM with prior knowledge to improve extraction accuracy and avoid duplicating already-known facts.
+
+A separate system prompt (`RAW_SYSTEM_PROMPT`) instructs the LLM to: read the unstructured text and extract all identifiable business facts into the same JSON schema as tagged mode; use the company context (if provided) to disambiguate people, teams, and terminology; avoid extracting facts that duplicate information already present in the company context; return only a JSON array — no prose, no explanation, no markdown wrapper.
+
+**Company context assembly:**
+
+Company context is assembled by IngestionService (not InferenceService) before calling `extract_facts_raw()`. The content is controlled by the company's `llm_context_mode` setting (§6.3, §11.1):
+
+| `llm_context_mode` | Context includes | Use case |
+| ------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `"none"` | No context provided | First ingestion for a new company, or when context would be misleading |
+| `"accepted_facts"` | Accepted/corrected inferred facts for this company (default) | Standard operation — LLM knows what's already been established |
+| `"full"` | Accepted facts + raw content of prior processed sources | Maximum context — useful when sources reference each other or use shorthand |
+
+The default is `"accepted_facts"`. Context is capped at a configurable character budget (`BLACKBOOK_LLM_CONTEXT_MAX_CHARS`, default 8000 characters) to avoid exceeding the LLM's context window. Facts are included newest-first; if the budget is exceeded, older facts are truncated.
 
 **Extraction strategy:**
 
-Extraction is performed in a **single LLM pass per source**. The entire normalized content is sent in one prompt and all InferredFacts are returned at once. Multi-pass extraction (one pass per category) is not used — it adds latency, cost, and coordination complexity with no correctness benefit given the single-pass output schema.
+**Tagged mode:** Extraction is performed in a **single LLM pass per source**. The entire normalized content is sent in one prompt and all InferredFacts are returned at once.
+
+**Raw mode:** Extraction is performed in a **single LLM pass per source** on the full source text, with optional company context.
+
+**Hybrid mode:** Two LLM passes per source — first the tagged pass via `extract_facts()`, then a raw pass via `extract_facts_raw()` on the untagged text. Results from both passes are combined before dedup and persistence.
+
+Multi-pass extraction per category is not used in any mode — each pass extracts all categories at once. This avoids the latency, cost, and coordination complexity of per-category passes with no correctness benefit given the single-pass output schema.
+
+**Method signatures:**
+
+```python
+async def extract_facts(self, lines: list[ParsedLine]) -> list[LLMInferredFact]:
+    """Tagged extraction — unchanged from Phase 2."""
+
+async def extract_facts_raw(
+    self,
+    raw_text: str,
+    company_context: str | None = None,
+) -> list[LLMInferredFact]:
+    """Extract facts from unannotated free-form text.
+
+    Uses RAW_SYSTEM_PROMPT. Company context is injected into the system
+    prompt when provided. Same validation and retry policy as extract_facts().
+    """
+```
+
+Both methods share the same `_call_llm()` internal machinery (retry, backoff, provider dispatch). They differ only in system prompt and user message construction.
 
 **Response validation:**
 
@@ -570,6 +622,10 @@ When `save_facts` persists LLM-extracted facts as `inferred_facts` rows, each fa
 
 This attribution is best-effort — the LLM may rephrase, split, or combine input lines. The `source_line` value is informational context for the reviewer, not a structural dependency.
 
+**Source line attribution (raw mode):**
+
+For facts extracted via `extract_facts_raw()`, source line attribution uses the same matching algorithm (substring match on `value` or `subordinate`/`manager`), but matches against raw text lines (split by newline) rather than `ParsedLine` objects. The `source_line` stores the matched raw text line as-is (no `canonical_key:` prefix). If no line matches, `source_line` is null — expected to be more common in raw mode since the LLM may rephrase substantially.
+
 **Sample input (post-normalization):**
 
 The following is a realistic block of text as it would be constructed by the InferenceService after PrefixParserService has stripped metadata and resolved all prefixes. This is the user message sent to the LLM; the system prompt (not shown here) instructs the LLM to return only the JSON array.
@@ -655,6 +711,40 @@ Expected output:
 ```
 
 Notes: The em dash in the `kp:` line is normalized to a semicolon — minor text cleanup is acceptable. The category (`cgkra-kp`, `cgkra-gw`, `swot-s`) is copied directly from the tag and must not be changed regardless of the content. A `kp:` line that sounds positive must still be emitted as `cgkra-kp`.
+
+---
+
+*Example 4 — Raw text extraction (no tags, with company context):*
+
+Input (raw text, no prefix tags):
+
+```
+Met with Jane Smith today. She runs the Platform Engineering team and reports
+to Bob Jones. They're using Kubernetes and considering Terraform for IaC.
+The deployment pipeline is a mess — manual releases take two engineers every time.
+```
+
+Company context provided:
+
+```
+Known people: Jane Smith (VP Engineering), Bob Jones (SVP Technology)
+Known teams: Platform Engineering
+Known technologies: Kubernetes
+```
+
+Expected output:
+
+```json
+[
+  {"category": "person", "value": "Jane Smith, Platform Engineering lead"},
+  {"category": "functional-area", "value": "Platform Engineering"},
+  {"category": "relationship", "value": "Jane Smith reports to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones"},
+  {"category": "technology", "value": "Terraform (under consideration for IaC)"},
+  {"category": "cgkra-kp", "value": "Deployment pipeline is manual; releases require two engineers"}
+]
+```
+
+Notes: The LLM uses company context to confirm identities and avoid duplicating known facts — Kubernetes is already known, so it is not re-extracted. It classifies the deployment pain point as `cgkra-kp` based on content analysis. The `source_line` for each fact will point to the raw text line where the information appeared.
 
 ---
 
@@ -1211,9 +1301,10 @@ All tables use `uuid` primary keys generated by `gen_random_uuid()`. All timesta
 | id            | uuid        | no   | gen_random_uuid() | PK                                                                                                                                |
 | name          | text        | no   |                   |                                                                                                                                   |
 | mission       | text        | yes  |                   |                                                                                                                                   |
-| vision        | text        | yes  |                   |                                                                                                                                   |
-| created_at    | timestamptz | no   | now()             |                                                                                                                                   |
-| updated_at    | timestamptz | no   | now()             |                                                                                                                                   |
+| vision           | text        | yes  |                   |                                                                                                                             |
+| llm_context_mode | text        | no   | 'accepted_facts'  | One of: `"none"`, `"accepted_facts"`, `"full"`; controls company context sent to LLM during raw/hybrid extraction (§9.5)    |
+| created_at       | timestamptz | no   | now()             |                                                                                                                             |
+| updated_at       | timestamptz | no   | now()             |                                                                                                                             |
 | search_vector | tsvector    | no   | generated         | `to_tsvector('english', coalesce(name,'') || ' ' || coalesce(mission,'') || ' ' || coalesce(vision,''))`; stored generated column |
 
 
@@ -1812,6 +1903,36 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 - API tests for all source and pending endpoints
 
 **Exit criteria**: investigator can upload a document with prefix tags, the system extracts facts, the investigator can review and accept/dismiss them, and accepted facts appear in the company profile.
+
+---
+
+### Phase 2.5 — Smart Ingestion: Raw Text Extraction + Hybrid Mode
+
+**Goal**: the system can extract facts from unannotated free-form text (no prefix tags required), with optional company context for disambiguation; sources with a mix of tagged and untagged content are processed via hybrid extraction (tagged pass + raw pass).
+
+**Backend:**
+- Add `llm_context_mode` column to `companies` table (Alembic migration); update Company ORM model and schemas
+- Add `BLACKBOOK_LLM_CONTEXT_MAX_CHARS` setting to `config.py` (default 8000)
+- `RAW_SYSTEM_PROMPT` in InferenceService: new system prompt for raw text extraction with company context injection
+- `InferenceService.extract_facts_raw(raw_text, company_context)`: new entry point using RAW_SYSTEM_PROMPT; same validation, retry, and output schema as `extract_facts()`
+- Context assembly in IngestionService: `_build_company_context(company_id)` queries accepted/corrected facts (and optionally prior source content) per `llm_context_mode`; respects `BLACKBOOK_LLM_CONTEXT_MAX_CHARS` budget
+- Extraction mode detection in `IngestionService.process_source()`: determine tagged/raw/hybrid based on `ParsedSource.lines` content; dispatch to appropriate InferenceService method(s)
+- Source line attribution for raw mode: match against raw text lines instead of `ParsedLine` objects
+- Update `CompanyService` and company schemas to expose `llm_context_mode` for read/update
+- Update `POST /sources/upload` to accept sources with no prefix tags (currently requires at least one routing prefix; routing via `company_id` query param is sufficient)
+
+**Frontend:**
+- Company settings: add `llm_context_mode` selector (none / accepted_facts / full) to company edit form
+
+**Tests:**
+- `InferenceService.extract_facts_raw()`: validation logic with canned LLM responses (same categories as tagged mode); verify company context is injected into system prompt when provided; verify omitted when None
+- `IngestionService.process_source()`: test tagged-only, raw-only, and hybrid mode detection and dispatch; verify combined facts from hybrid mode
+- Context assembly: verify `_build_company_context()` respects `llm_context_mode` and character budget; verify newest-first ordering and truncation
+- Source line attribution: verify raw mode attribution matches against raw text lines
+- Migration: verify `llm_context_mode` column exists with correct default
+- API: verify company update accepts `llm_context_mode`; verify upload without tags succeeds when `company_id` is provided
+
+**Exit criteria**: investigator can upload unannotated text and receive extracted facts; hybrid extraction works for mixed content; company context mode is configurable per company.
 
 ---
 

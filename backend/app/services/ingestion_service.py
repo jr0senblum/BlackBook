@@ -110,6 +110,7 @@ class IngestionService:
         resolved_company_id = await self._resolve_company(parsed, company_id)
 
         # --- Create Source record ---
+        safe_name = sanitize_filename(filename)
         source = await self._source_repo.create(
             company_id=resolved_company_id,
             type="upload",
@@ -119,6 +120,13 @@ class IngestionService:
             interaction_date=parsed.date,
             src=parsed.src,
         )
+
+        # Compute file_path and update the Source record.
+        # Path is relative to data_dir: "sources/{company_id}/{source_id}_{filename}"
+        rel_path = os.path.join(
+            "sources", str(resolved_company_id), f"{source.id}_{safe_name}"
+        )
+        await self._source_repo.update_file_path(source.id, rel_path)
 
         # --- Save uploaded file to disk ---
         await self._save_file(
