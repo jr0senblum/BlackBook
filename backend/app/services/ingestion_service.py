@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 class InferenceServiceProtocol(Protocol):
     async def extract_facts(self, lines: list[ParsedLine]) -> list[Any]: ...
+    async def extract_facts_raw(
+        self, raw_text: str, company_context: str | None = None
+    ) -> list[Any]: ...
 
 
 class ReviewServiceProtocol(Protocol):
@@ -47,7 +50,8 @@ class ReviewServiceProtocol(Protocol):
         source_id: str | UUID,
         company_id: str | UUID,
         facts: list[Any],
-        lines: list[ParsedLine],
+        lines: list[ParsedLine] | None = None,
+        raw_lines: list[str] | None = None,
     ) -> None: ...
 
 
@@ -141,7 +145,14 @@ class IngestionService:
     # ── Process source (async, called by worker) ─────────────────
 
     async def process_source(self, source_id: str) -> None:
-        """Load source, call LLM, persist facts. Called by the background worker."""
+        """Load source, call LLM, persist facts. Called by the background worker.
+
+        Detects extraction mode based on parsed lines:
+        - **Tagged**: all lines have explicit prefixes → extract_facts()
+        - **Raw**: all lines are defaulted (no prefix) → extract_facts_raw()
+        - **Hybrid**: mix of tagged and defaulted → both passes, fail-all on error
+        - **No lines**: routing/metadata only → mark processed with zero facts
+        """
         sid = UUID(source_id)
 
         # Load and mark processing
@@ -154,13 +165,57 @@ class IngestionService:
             # Re-parse to get content lines (excludes routing/metadata)
             parsed = parse(source.raw_content)
 
-            # Call LLM extraction
-            facts = await self._inference_service.extract_facts(parsed.lines)
+            # No content lines — mark processed with zero facts
+            if not parsed.lines:
+                await self._source_repo.update_status(sid, status="processed")
+                return
 
-            # Persist facts (pass parsed lines for source_line attribution)
-            await self._review_service.save_facts(
-                source.id, source.company_id, facts, parsed.lines
-            )
+            # Mode detection
+            tagged_lines = [l for l in parsed.lines if not l.defaulted]
+            untagged_lines = [l for l in parsed.lines if l.defaulted]
+            has_tagged = len(tagged_lines) > 0
+            has_untagged = len(untagged_lines) > 0
+
+            if has_tagged and not has_untagged:
+                # Tagged mode — all lines have explicit prefixes
+                facts = await self._inference_service.extract_facts(tagged_lines)
+                await self._review_service.save_facts(
+                    source.id, source.company_id, facts, lines=tagged_lines
+                )
+
+            elif not has_tagged and has_untagged:
+                # Raw mode — all lines are defaulted
+                context = await self._build_company_context(source.company_id)
+                raw_text = "\n".join(l.text for l in untagged_lines)
+                facts = await self._inference_service.extract_facts_raw(
+                    raw_text, context
+                )
+                await self._review_service.save_facts(
+                    source.id, source.company_id, facts,
+                    raw_lines=[l.text for l in untagged_lines],
+                )
+
+            else:
+                # Hybrid mode — mix of tagged and untagged
+                # Pass 1: tagged extraction
+                tagged_facts = await self._inference_service.extract_facts(
+                    tagged_lines
+                )
+
+                # Pass 2: raw extraction
+                context = await self._build_company_context(source.company_id)
+                raw_text = "\n".join(l.text for l in untagged_lines)
+                raw_facts = await self._inference_service.extract_facts_raw(
+                    raw_text, context
+                )
+
+                # Combine and persist (dedup at save time handles overlap)
+                all_facts = tagged_facts + raw_facts
+                await self._review_service.save_facts(
+                    source.id, source.company_id, all_facts,
+                    lines=tagged_lines,
+                    raw_lines=[l.text for l in untagged_lines],
+                )
 
             # Mark processed
             await self._source_repo.update_status(sid, status="processed")
@@ -231,6 +286,103 @@ class IngestionService:
         return await self._source_repo.list_by_company(
             UUID(company_id), status=status, limit=limit, offset=offset
         )
+
+    # ── Context assembly ───────────────────────────────────────────
+
+    # Human-readable labels for context display, grouped by category.
+    _CATEGORY_LABELS: dict[str, str] = {
+        "person": "Known people",
+        "functional-area": "Known functional areas",
+        "relationship": "Known relationships",
+        "technology": "Known technologies",
+        "process": "Known processes",
+        "cgkra-cs": "CGKRA current state",
+        "cgkra-gw": "CGKRA going well",
+        "cgkra-kp": "CGKRA key problems",
+        "cgkra-rm": "CGKRA roadmap",
+        "cgkra-aop": "CGKRA annual operating plan",
+        "swot-s": "SWOT strengths",
+        "swot-w": "SWOT weaknesses",
+        "swot-o": "SWOT opportunities",
+        "swot-th": "SWOT threats",
+        "action-item": "Known action items",
+        "other": "Other known facts",
+    }
+
+    async def _build_company_context(self, company_id: UUID) -> str | None:
+        """Assemble company context for the LLM based on llm_context_mode.
+
+        Returns a formatted string or None (if mode is "none" or no data exists).
+        Respects the character budget from settings.llm_context_max_chars.
+        Facts are added newest-first; truncation is at the fact level (never mid-fact).
+        """
+        company = await self._company_repo.get_by_id(company_id)
+        if company is None:
+            return None
+
+        mode = company.llm_context_mode
+        if mode == "none":
+            return None
+
+        budget = self._settings.llm_context_max_chars
+        parts: list[str] = []
+        used = 0
+
+        # --- Accepted facts (for both "accepted_facts" and "full" modes) ---
+        facts = await self._inferred_fact_repo.list_accepted_by_company(company_id)
+        if facts:
+            # Build groups incrementally, fact by fact (newest first from query).
+            # Fact-level truncation: stop when adding the next fact would exceed budget.
+            groups: dict[str, list[str]] = {}
+            for fact in facts:
+                cat = fact.category
+                value = fact.corrected_value if fact.corrected_value is not None else fact.inferred_value
+
+                # Compute what the output would look like after adding this fact
+                trial_groups = {k: list(v) for k, v in groups.items()}
+                if cat not in trial_groups:
+                    trial_groups[cat] = []
+                trial_groups[cat].append(value)
+
+                trial_lines = []
+                for g_cat, g_vals in trial_groups.items():
+                    g_label = self._CATEGORY_LABELS.get(g_cat, g_cat)
+                    trial_lines.append(f"{g_label}: {', '.join(g_vals)}")
+                trial_text = "\n".join(trial_lines)
+
+                if len(trial_text) > budget:
+                    break
+
+                # Accept this fact
+                if cat not in groups:
+                    groups[cat] = []
+                groups[cat].append(value)
+
+            # Format accepted groups
+            for cat, values in groups.items():
+                label = self._CATEGORY_LABELS.get(cat, cat)
+                parts.append(f"{label}: {', '.join(values)}")
+            used = len("\n".join(parts)) if parts else 0
+
+        # --- Source content (only for "full" mode) ---
+        if mode == "full":
+            sources = await self._source_repo.list_processed_content(company_id)
+            for filename, raw_content in sources:
+                if not raw_content:
+                    continue
+                name = filename or "unnamed source"
+                source_section = f"--- Source: {name} ---\n{raw_content}"
+                # Account for the \n separator that "\n".join will add
+                added_len = len(source_section) + (1 if parts else 0)
+                if used + added_len > budget:
+                    break
+                parts.append(source_section)
+                used += added_len
+
+        if not parts:
+            return None
+
+        return "\n".join(parts)
 
     # ── Private helpers ──────────────────────────────────────────
 

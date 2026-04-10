@@ -40,6 +40,7 @@ export interface CompanyDetail {
   name: string;
   mission: string | null;
   vision: string | null;
+  llm_context_mode: string;
   created_at: string;
   updated_at: string;
   pending_count: number;
@@ -55,6 +56,7 @@ export interface CompanyUpdateInput {
   name?: string;
   mission?: string;
   vision?: string;
+  llm_context_mode?: string;
 }
 
 // ── Sources ─────────────────────────────────────────────────────

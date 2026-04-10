@@ -59,6 +59,7 @@ class ReviewService:
         company_id: str | UUID,
         facts: list[LLMInferredFact],
         lines: list[ParsedLine] | None = None,
+        raw_lines: list[str] | None = None,
     ) -> None:
         """Convert LLMInferredFact list to inferred_facts rows (status='pending').
 
@@ -66,8 +67,14 @@ class ReviewService:
         for reliable re-parsing at accept time.
 
         Source line attribution (§9.5): each fact is matched back to its
-        originating ParsedLine via substring match.  The matched line is stored
+        originating line via substring match.  The matched line is stored
         as ``source_line`` on the inferred_facts row.
+
+        Attribution priority:
+          - If ``lines`` is provided: use ``_match_source_line`` (tagged mode).
+          - If ``raw_lines`` is provided: use ``_match_raw_source_line`` (raw mode).
+          - If both are provided (hybrid): try tagged first, fall back to raw.
+          - If neither: ``source_line`` is null.
 
         Accepts str or UUID for source_id/company_id — converts to UUID internally.
         """
@@ -94,8 +101,12 @@ class ReviewService:
                 )
                 continue
 
-            # Source line attribution: match fact back to originating ParsedLine
-            source_line = self._match_source_line(fact, lines) if lines else None
+            # Source line attribution: try tagged match first, fall back to raw
+            source_line: str | None = None
+            if lines is not None:
+                source_line = self._match_source_line(fact, lines)
+            if source_line is None and raw_lines is not None:
+                source_line = self._match_raw_source_line(fact, raw_lines)
 
             rows.append({
                 "source_id": sid,
@@ -133,6 +144,31 @@ class ReviewService:
             for line in lines:
                 if term_lower in line.text.lower():
                     return f"{line.canonical_key}: {line.text}"
+
+        return None
+
+    @staticmethod
+    def _match_raw_source_line(
+        fact: LLMInferredFact, raw_lines: list[str]
+    ) -> str | None:
+        """Find the originating raw text line for a fact (best-effort).
+
+        Same matching algorithm as ``_match_source_line`` (substring match,
+        case-insensitive, first match wins) but returns the raw line as-is —
+        no ``canonical_key:`` prefix — per §9.5.
+        """
+        if fact.category == "relationship":
+            search_terms = [
+                t for t in (fact.subordinate, fact.manager) if t
+            ]
+        else:
+            search_terms = [fact.value]
+
+        for term in search_terms:
+            term_lower = term.lower()
+            for raw_line in raw_lines:
+                if term_lower in raw_line.lower():
+                    return raw_line
 
         return None
 

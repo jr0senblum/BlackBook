@@ -37,6 +37,7 @@ class Company(Base):
     name = Column(Text, nullable=False)
     mission = Column(Text, nullable=True)
     vision = Column(Text, nullable=True)
+    llm_context_mode = Column(Text, nullable=False, server_default=text("'accepted_facts'"))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
     search_vector = Column(

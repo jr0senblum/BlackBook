@@ -15,8 +15,10 @@ from app.config import Settings
 from app.exceptions import InferenceApiError, InferenceValidationError
 from app.schemas.inferred_fact import LLMInferredFact
 from app.services.inference_service import (
+    RAW_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     InferenceService,
+    _build_raw_system_prompt,
     _build_user_message,
     _strip_code_fence,
     _validate_response,
@@ -903,3 +905,235 @@ class TestPromptConstruction:
         call_kwargs = client.post.call_args
         body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert body["system"] == SYSTEM_PROMPT
+
+
+# ── Unit tests: _build_raw_system_prompt ────────────────────────
+
+
+class TestBuildRawSystemPrompt:
+    def test_no_context_returns_raw_prompt_unchanged(self):
+        result = _build_raw_system_prompt(None)
+        assert result == RAW_SYSTEM_PROMPT
+
+    def test_with_context_appends_delimited_section(self):
+        context = "Known people: Jane Doe (CTO)\nKnown tech: Kubernetes"
+        result = _build_raw_system_prompt(context)
+        assert result.startswith(RAW_SYSTEM_PROMPT)
+        assert "=== COMPANY CONTEXT ===" in result
+        assert context in result
+        assert "=== END CONTEXT ===" in result
+
+    def test_with_context_preserves_prompt_before_context(self):
+        context = "Some context"
+        result = _build_raw_system_prompt(context)
+        # The raw prompt text should appear in full before the context section
+        idx_prompt_end = result.index("\n=== COMPANY CONTEXT ===")
+        assert result[:idx_prompt_end] == RAW_SYSTEM_PROMPT
+
+
+# ── Integration tests: InferenceService.extract_facts_raw ───────
+
+
+class TestExtractFactsRaw:
+    """Tests for the raw text extraction entry point."""
+
+    @pytest.mark.asyncio
+    async def test_valid_raw_text_returns_facts(self):
+        """extract_facts_raw with valid raw text returns list of LLMInferredFact."""
+        facts_json = _valid_fact_json([
+            {"category": "person", "value": "Jane Doe"},
+            {"category": "technology", "value": "Python"},
+        ])
+        client = _mock_client_with_response(_anthropic_response(facts_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+
+        result = await svc.extract_facts_raw("Met with Jane Doe. They use Python.")
+
+        assert len(result) == 2
+        assert all(isinstance(f, LLMInferredFact) for f in result)
+        assert result[0].category == "person"
+        assert result[1].value == "Python"
+
+    @pytest.mark.asyncio
+    async def test_empty_raw_text_returns_empty_list(self):
+        """extract_facts_raw with empty raw_text returns empty list, no LLM call."""
+        client = _mock_client_with_response(_anthropic_response("[]"))
+        svc = InferenceService(settings=_settings(), http_client=client)
+
+        result = await svc.extract_facts_raw("")
+
+        assert result == []
+        client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_raw_text_returns_empty_list(self):
+        """extract_facts_raw with whitespace-only raw_text returns empty list."""
+        client = _mock_client_with_response(_anthropic_response("[]"))
+        svc = InferenceService(settings=_settings(), http_client=client)
+
+        result = await svc.extract_facts_raw("   \n\t  ")
+
+        assert result == []
+        client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_with_context_injects_into_system_prompt(self):
+        """Company context appears in system prompt, not in user message."""
+        facts_json = _valid_fact_json()
+        client = _mock_client_with_response(_anthropic_response(facts_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        context = "Known people: Alice (CEO)"
+
+        await svc.extract_facts_raw("Met with Bob today.", context)
+
+        call_kwargs = client.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        system = body["system"]
+        user_msg = body["messages"][0]["content"]
+        # Context must be in system prompt
+        assert "=== COMPANY CONTEXT ===" in system
+        assert context in system
+        # Context must NOT be in user message
+        assert context not in user_msg
+        # User message is just the raw text
+        assert user_msg == "Met with Bob today."
+
+    @pytest.mark.asyncio
+    async def test_without_context_uses_raw_prompt_unmodified(self):
+        """Without context, system prompt is RAW_SYSTEM_PROMPT unmodified."""
+        facts_json = _valid_fact_json()
+        client = _mock_client_with_response(_anthropic_response(facts_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+
+        await svc.extract_facts_raw("Some raw text.")
+
+        call_kwargs = client.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["system"] == RAW_SYSTEM_PROMPT
+        assert body["messages"][0]["content"] == "Some raw text."
+
+    @pytest.mark.asyncio
+    async def test_uses_raw_prompt_not_tagged_prompt(self):
+        """extract_facts_raw uses RAW_SYSTEM_PROMPT, not SYSTEM_PROMPT."""
+        facts_json = _valid_fact_json()
+        client = _mock_client_with_response(_anthropic_response(facts_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+
+        await svc.extract_facts_raw("Some text.")
+
+        call_kwargs = client.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["system"] != SYSTEM_PROMPT
+        assert body["system"] == RAW_SYSTEM_PROMPT
+
+
+class TestExtractFactsRawValidation:
+    """Validation failure tests for extract_facts_raw."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_json(self):
+        client = _mock_client_with_response(
+            _anthropic_response("not valid json {{{")
+        )
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="invalid JSON"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_empty_array(self):
+        client = _mock_client_with_response(_anthropic_response("[]"))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="empty array"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_missing_category(self):
+        bad_json = json.dumps([{"value": "Alice"}])
+        client = _mock_client_with_response(_anthropic_response(bad_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="validation failed"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_missing_value(self):
+        bad_json = json.dumps([{"category": "person"}])
+        client = _mock_client_with_response(_anthropic_response(bad_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="validation failed"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_unknown_category(self):
+        bad_json = json.dumps([{"category": "bogus", "value": "whatever"}])
+        client = _mock_client_with_response(_anthropic_response(bad_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="validation failed"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_relationship_missing_subordinate(self):
+        bad_json = json.dumps([
+            {"category": "relationship", "value": "reports-to", "manager": "Alice"}
+        ])
+        client = _mock_client_with_response(_anthropic_response(bad_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="validation failed"):
+            await svc.extract_facts_raw("Some text.")
+
+    @pytest.mark.asyncio
+    async def test_relationship_missing_manager(self):
+        bad_json = json.dumps([
+            {"category": "relationship", "value": "reports-to", "subordinate": "Bob"}
+        ])
+        client = _mock_client_with_response(_anthropic_response(bad_json))
+        svc = InferenceService(settings=_settings(), http_client=client)
+        with pytest.raises(InferenceValidationError, match="validation failed"):
+            await svc.extract_facts_raw("Some text.")
+
+
+class TestExtractFactsRawRetry:
+    """Retry behaviour for extract_facts_raw."""
+
+    @pytest.mark.asyncio
+    async def test_api_failure_retries_then_raises(self):
+        """API failure → retries exhausted → raises InferenceApiError."""
+        error_response = httpx.Response(
+            status_code=500,
+            request=httpx.Request("POST", "https://test"),
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post = AsyncMock(
+            side_effect=httpx.HTTPStatusError(
+                "500", request=error_response.request, response=error_response
+            )
+        )
+
+        svc = InferenceService(
+            settings=_settings(llm_max_attempts=3), http_client=client
+        )
+        with patch.object(InferenceService, "_sleep", new_callable=AsyncMock):
+            with pytest.raises(InferenceApiError, match="unavailable after 3 attempts"):
+                await svc.extract_facts_raw("Some text.")
+
+        assert client.post.call_count == 3
+
+
+class TestExtractFactsRawOpenAI:
+    """Verify extract_facts_raw works with OpenAI provider."""
+
+    @pytest.mark.asyncio
+    async def test_openai_raw_uses_raw_system_prompt(self):
+        facts_json = _valid_fact_json()
+        client = _mock_client_with_response(_openai_response(facts_json))
+        svc = InferenceService(
+            settings=_settings(llm_provider="openai"), http_client=client
+        )
+
+        await svc.extract_facts_raw("Some raw text.")
+
+        call_kwargs = client.post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["messages"][0]["role"] == "system"
+        assert body["messages"][0]["content"] == RAW_SYSTEM_PROMPT
+        assert body["messages"][1]["role"] == "user"
+        assert body["messages"][1]["content"] == "Some raw text."

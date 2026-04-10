@@ -420,13 +420,13 @@ class TestUnrecognizedPrefixes:
     def test_unrecognized_prefix(self) -> None:
         result = parse("xyz: some random text")
         assert result.lines == [
-            ParsedLine(canonical_key="n", text="xyz: some random text")
+            ParsedLine(canonical_key="n", text="xyz: some random text", defaulted=True)
         ]
 
     def test_another_unrecognized(self) -> None:
         result = parse("foobar: hello world")
         assert result.lines == [
-            ParsedLine(canonical_key="n", text="foobar: hello world")
+            ParsedLine(canonical_key="n", text="foobar: hello world", defaulted=True)
         ]
 
 
@@ -442,13 +442,14 @@ class TestLinesWithoutPrefix:
             ParsedLine(
                 canonical_key="n",
                 text="This is a plain text line without any prefix",
+                defaulted=True,
             )
         ]
 
     def test_just_text(self) -> None:
         result = parse("just some text")
         assert result.lines == [
-            ParsedLine(canonical_key="n", text="just some text")
+            ParsedLine(canonical_key="n", text="just some text", defaulted=True)
         ]
 
 
@@ -645,7 +646,7 @@ class TestFullDocument:
             canonical_key="a", text="schedule follow-up"
         )
         assert result.lines[18] == ParsedLine(
-            canonical_key="n", text="This is an untagged line"
+            canonical_key="n", text="This is an untagged line", defaulted=True
         )
 
     def test_no_routing_no_metadata(self) -> None:
@@ -676,10 +677,10 @@ class TestFullDocument:
         assert len(result.lines) == 4
         assert result.lines[0] == ParsedLine(canonical_key="p", text="Alice")
         assert result.lines[1] == ParsedLine(
-            canonical_key="n", text="xyz: unknown tag"
+            canonical_key="n", text="xyz: unknown tag", defaulted=True
         )
         assert result.lines[2] == ParsedLine(
-            canonical_key="n", text="Just some plain text"
+            canonical_key="n", text="Just some plain text", defaulted=True
         )
         assert result.lines[3] == ParsedLine(canonical_key="fn", text="Engineering")
 
@@ -727,5 +728,89 @@ class TestEdgeCases:
         'https' is not in the canonical map so it becomes n: with full line."""
         result = parse("https://example.com/path")
         assert result.lines == [
-            ParsedLine(canonical_key="n", text="https://example.com/path")
+            ParsedLine(canonical_key="n", text="https://example.com/path", defaulted=True)
         ]
+
+
+# ── Defaulted flag ──────────────────────────────────────────────
+
+
+class TestDefaultedFlag:
+    """The defaulted flag distinguishes investigator-tagged lines from
+    auto-defaulted lines. See PHASE2.5.md Unit 4."""
+
+    def test_no_prefix_line_is_defaulted(self) -> None:
+        """A line with no colon at all gets defaulted=True."""
+        result = parse("Some plain text without any prefix")
+        assert len(result.lines) == 1
+        assert result.lines[0].defaulted is True
+
+    def test_unrecognized_prefix_is_defaulted(self) -> None:
+        """A line with an unrecognized prefix gets defaulted=True."""
+        result = parse("blah: some random text")
+        assert len(result.lines) == 1
+        assert result.lines[0].defaulted is True
+
+    def test_explicit_n_prefix_not_defaulted(self) -> None:
+        """An explicit n: prefix keeps defaulted=False."""
+        result = parse("n: This is an intentional note")
+        assert len(result.lines) == 1
+        assert result.lines[0].canonical_key == "n"
+        assert result.lines[0].defaulted is False
+
+    def test_explicit_note_prefix_not_defaulted(self) -> None:
+        """An explicit note: prefix keeps defaulted=False."""
+        result = parse("note: This is another intentional note")
+        assert len(result.lines) == 1
+        assert result.lines[0].canonical_key == "n"
+        assert result.lines[0].defaulted is False
+
+    def test_recognized_content_prefix_not_defaulted(self) -> None:
+        """Any recognized content prefix keeps defaulted=False."""
+        result = parse("p: Alice, CEO\nfn: Engineering\ntech: Python")
+        assert len(result.lines) == 3
+        for line in result.lines:
+            assert line.defaulted is False
+
+    def test_mixed_defaulted_and_explicit(self) -> None:
+        """A document with both tagged and untagged lines sets defaulted correctly."""
+        text = (
+            "p: Alice, CEO\n"
+            "This is untagged text\n"
+            "fn: Engineering\n"
+            "xyz: unrecognized prefix\n"
+            "n: explicit note\n"
+        )
+        result = parse(text)
+        assert len(result.lines) == 5
+        assert result.lines[0].defaulted is False   # p: recognized
+        assert result.lines[1].defaulted is True    # no colon
+        assert result.lines[2].defaulted is False   # fn: recognized
+        assert result.lines[3].defaulted is True    # xyz: unrecognized
+        assert result.lines[4].defaulted is False   # n: explicit note
+
+    def test_malformed_rel_line_not_defaulted(self) -> None:
+        """A rel: line missing the > separator is demoted to n: but keeps
+        defaulted=False — the investigator used a recognized prefix, just
+        with a syntax error. For mode detection this means the line is
+        classified as tagged (not raw)."""
+        result = parse("rel: Alice manages Bob")
+        assert len(result.lines) == 1
+        assert result.lines[0].canonical_key == "n"
+        assert result.lines[0].text == "rel: Alice manages Bob"
+        assert result.lines[0].defaulted is False
+
+    def test_malformed_rel_classified_as_tagged_in_mode_detection(self) -> None:
+        """A document with only malformed rel: lines (no >) is classified as
+        tagged mode — all lines have defaulted=False despite canonical_key='n'."""
+        result = parse("rel: Alice manages Bob\nrel: Carol leads Dave")
+        assert len(result.lines) == 2
+        # Both lines are demoted to n: but NOT defaulted
+        for line in result.lines:
+            assert line.canonical_key == "n"
+            assert line.defaulted is False
+        # Mode detection: no defaulted lines → tagged mode
+        tagged = [l for l in result.lines if not l.defaulted]
+        untagged = [l for l in result.lines if l.defaulted]
+        assert len(tagged) == 2
+        assert len(untagged) == 0

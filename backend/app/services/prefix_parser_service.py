@@ -21,6 +21,7 @@ class ParsedLine:
 
     canonical_key: str  # e.g. "p", "fn", "rel", "kp", "n"
     text: str  # content after the colon, stripped
+    defaulted: bool = False  # True if line had no recognized prefix (auto-assigned to n:)
 
 
 @dataclass
@@ -141,7 +142,7 @@ def parse(raw_text: str) -> ParsedSource:
         match = _PREFIX_RE.match(stripped)
         if match is None:
             # No colon at all — treat as plain note with full line.
-            result.lines.append(ParsedLine(canonical_key="n", text=stripped))
+            result.lines.append(ParsedLine(canonical_key="n", text=stripped, defaulted=True))
             continue
 
         raw_prefix = match.group(1).strip().lower()
@@ -154,7 +155,7 @@ def parse(raw_text: str) -> ParsedSource:
             logger.warning(
                 "Unrecognized prefix '%s' — treating as plain note", raw_prefix
             )
-            result.lines.append(ParsedLine(canonical_key="n", text=stripped))
+            result.lines.append(ParsedLine(canonical_key="n", text=stripped, defaulted=True))
             continue
 
         # Routing keys → store in dedicated fields, NOT in lines.

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import Company, Source
 from app.repositories.action_item_repository import ActionItemRepository
+from app.repositories.company_repository import CompanyRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.person_repository import PersonRepository
@@ -20,6 +21,11 @@ from app.repositories.source_repository import SourceRepository
 
 
 # ── Fixtures ─────────────────────────────────────────────────────
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def company_repo(db_session: AsyncSession) -> CompanyRepository:
+    return CompanyRepository(db_session)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -1345,3 +1351,176 @@ async def test_action_item_get_by_id_not_found(
     """get_by_id() returns None for a non-existent ID."""
     result = await action_item_repo.get_by_id(uuid4())
     assert result is None
+
+
+# ── Company: llm_context_mode ────────────────────────────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_company_create_default_llm_context_mode(
+    db_session: AsyncSession,
+    company_repo: CompanyRepository,
+) -> None:
+    """Company created via repo gets server_default llm_context_mode='accepted_facts'."""
+    company = await company_repo.create(name=f"CtxDefault-{uuid4().hex[:8]}")
+    await db_session.refresh(company)
+    assert company.llm_context_mode == "accepted_facts"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_company_update_llm_context_mode_to_none(
+    db_session: AsyncSession,
+    company_repo: CompanyRepository,
+) -> None:
+    """Updating llm_context_mode from 'accepted_facts' to 'none' persists."""
+    company = await company_repo.create(name=f"CtxNone-{uuid4().hex[:8]}")
+    await db_session.refresh(company)
+    assert company.llm_context_mode == "accepted_facts"
+
+    updated = await company_repo.update(company, llm_context_mode="none")
+    assert updated.llm_context_mode == "none"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_company_update_llm_context_mode_to_full(
+    db_session: AsyncSession,
+    company_repo: CompanyRepository,
+) -> None:
+    """Updating llm_context_mode from 'none' to 'full' persists."""
+    company = await company_repo.create(name=f"CtxFull-{uuid4().hex[:8]}")
+    await db_session.refresh(company)
+    # Set to none first
+    company = await company_repo.update(company, llm_context_mode="none")
+    assert company.llm_context_mode == "none"
+
+    # Now update to full
+    updated = await company_repo.update(company, llm_context_mode="full")
+    assert updated.llm_context_mode == "full"
+
+
+# ── InferredFactRepository: list_accepted_by_company ─────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_accepted_by_company_returns_accepted_and_corrected(
+    db_session: AsyncSession,
+    fact_repo: InferredFactRepository,
+) -> None:
+    """list_accepted_by_company returns accepted/corrected facts, ordered by created_at DESC."""
+    from datetime import datetime, timezone
+
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    # Create facts with explicit timestamps for ordering
+    t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    t2 = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    t3 = datetime(2024, 1, 3, tzinfo=timezone.utc)
+
+    facts = await fact_repo.create_many([
+        {"source_id": source.id, "company_id": company.id, "category": "person", "inferred_value": "Oldest"},
+        {"source_id": source.id, "company_id": company.id, "category": "technology", "inferred_value": "Middle"},
+        {"source_id": source.id, "company_id": company.id, "category": "process", "inferred_value": "Newest"},
+    ])
+
+    # Set explicit created_at timestamps and statuses
+    facts[0].created_at = t1
+    facts[1].created_at = t2
+    facts[2].created_at = t3
+    await db_session.flush()
+
+    # Accept first, correct second, leave third pending
+    await fact_repo.update_status(facts[0].id, status="accepted", reviewed_at=t1)
+    await fact_repo.update_status(facts[1].id, status="corrected", reviewed_at=t2, corrected_value="Middle-corrected")
+
+    result = await fact_repo.list_accepted_by_company(company.id)
+    assert len(result) == 2
+    # Ordered by created_at DESC: newest first
+    assert result[0].inferred_value == "Middle"
+    assert result[1].inferred_value == "Oldest"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_accepted_by_company_excludes_pending_dismissed_merged(
+    db_session: AsyncSession,
+    fact_repo: InferredFactRepository,
+) -> None:
+    """list_accepted_by_company excludes pending, dismissed, and merged facts."""
+    from datetime import datetime, timezone
+
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    now = datetime(2024, 6, 1, tzinfo=timezone.utc)
+
+    facts = await fact_repo.create_many([
+        {"source_id": source.id, "company_id": company.id, "category": "person", "inferred_value": "Pending"},
+        {"source_id": source.id, "company_id": company.id, "category": "person", "inferred_value": "Dismissed"},
+        {"source_id": source.id, "company_id": company.id, "category": "person", "inferred_value": "Accepted"},
+        {"source_id": source.id, "company_id": company.id, "category": "person", "inferred_value": "Merged"},
+    ])
+
+    # Leave first as pending, dismiss second, accept third, merge fourth
+    await fact_repo.update_status(facts[1].id, status="dismissed", reviewed_at=now)
+    await fact_repo.update_status(facts[2].id, status="accepted", reviewed_at=now)
+    await fact_repo.update_status(
+        facts[3].id,
+        status="merged",
+        reviewed_at=now,
+        merged_into_entity_type="person",
+        merged_into_entity_id=uuid4(),
+    )
+
+    result = await fact_repo.list_accepted_by_company(company.id)
+    values = [f.inferred_value for f in result]
+    assert "Accepted" in values
+    assert "Pending" not in values
+    assert "Dismissed" not in values
+    assert "Merged" not in values
+
+
+# ── SourceRepository: list_processed_content ─────────────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_processed_content_returns_processed_sources(
+    db_session: AsyncSession,
+    source_repo: SourceRepository,
+) -> None:
+    """list_processed_content returns only processed sources with raw_content."""
+    company = await _make_company(db_session)
+
+    s1 = await _make_source(db_session, company.id, raw_content="Content A", filename="a.txt", status="processed")
+    await _make_source(db_session, company.id, raw_content="Content B", filename="b.txt", status="pending")
+    await _make_source(db_session, company.id, raw_content="Content C", filename="c.txt", status="failed")
+
+    result = await source_repo.list_processed_content(company.id)
+    assert len(result) == 1
+    assert result[0] == ("a.txt", "Content A")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_processed_content_ordered_by_received_at_desc(
+    db_session: AsyncSession,
+    source_repo: SourceRepository,
+) -> None:
+    """list_processed_content returns sources ordered by received_at DESC."""
+    from datetime import datetime, timezone
+
+    company = await _make_company(db_session)
+
+    t1 = datetime(2024, 3, 1, tzinfo=timezone.utc)
+    t2 = datetime(2024, 3, 2, tzinfo=timezone.utc)
+
+    s1 = await _make_source(db_session, company.id, raw_content="Older", filename="older.txt", status="processed")
+    s2 = await _make_source(db_session, company.id, raw_content="Newer", filename="newer.txt", status="processed")
+
+    # Set explicit timestamps
+    s1.received_at = t1
+    s2.received_at = t2
+    await db_session.flush()
+
+    result = await source_repo.list_processed_content(company.id)
+    assert len(result) == 2
+    # Newest first
+    assert result[0][0] == "newer.txt"
+    assert result[1][0] == "older.txt"

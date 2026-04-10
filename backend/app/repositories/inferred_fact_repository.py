@@ -52,6 +52,29 @@ class InferredFactRepository:
         )
         return result.scalar_one() > 0
 
+    async def list_accepted_by_company(
+        self,
+        company_id: UUID,
+        *,
+        limit: int = 500,
+    ) -> list[InferredFact]:
+        """Return accepted/corrected facts for a company, newest first.
+
+        Used by context assembly to build company context for the LLM.
+        The ``limit`` caps the query to prevent loading unbounded rows;
+        the caller enforces the character budget.
+        """
+        result = await self._db.execute(
+            select(InferredFact)
+            .where(
+                InferredFact.company_id == company_id,
+                InferredFact.status.in_(("accepted", "corrected")),
+            )
+            .order_by(InferredFact.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_by_id(self, fact_id: UUID) -> InferredFact | None:
         """Return an inferred fact by primary key, or None."""
         result = await self._db.execute(

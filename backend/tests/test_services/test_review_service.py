@@ -1319,3 +1319,229 @@ async def test_duplicate_file_full_scenario(
 
     mgrs = await person_repo.get_by_name_iexact(company.id, mgr_name)
     assert len(mgrs) == 1, f"Expected 1 person '{mgr_name}', got {len(mgrs)}"
+
+
+# ---------------------------------------------------------------------------
+# save_facts — raw_lines attribution (Unit 5 of Phase 2.5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_raw_lines_matched(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """save_facts with raw_lines — raw mode fact matched to originating line."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    raw_lines = [
+        "Alice is the CEO and runs the company",
+        "They use Kubernetes for container orchestration",
+    ]
+    facts = [
+        LLMInferredFact(category="person", value="Alice"),
+        LLMInferredFact(category="technology", value="Kubernetes"),
+    ]
+    await review_service.save_facts(
+        source.id, company.id, facts, raw_lines=raw_lines
+    )
+
+    rows, total = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert total == 2
+    # Find each fact and check source_line is the raw line (no prefix)
+    by_cat = {r.category: r for r in rows}
+    assert by_cat["person"].source_line == "Alice is the CEO and runs the company"
+    assert by_cat["technology"].source_line == "They use Kubernetes for container orchestration"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_raw_lines_no_match(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """save_facts with raw_lines — no match found → source_line is null."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    raw_lines = [
+        "The team discussed cloud migration strategies",
+    ]
+    # LLM extracted something not present in the raw text
+    facts = [LLMInferredFact(category="technology", value="Terraform")]
+    await review_service.save_facts(
+        source.id, company.id, facts, raw_lines=raw_lines
+    )
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    assert rows[0].source_line is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_hybrid_attribution(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """save_facts with both lines and raw_lines (hybrid) — tagged fact matched
+    via lines, raw fact matched via raw_lines."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    lines = [
+        ParsedLine(canonical_key="p", text="Alice Brown, CTO"),
+    ]
+    raw_lines = [
+        "They use Docker for containerization",
+    ]
+    facts = [
+        LLMInferredFact(category="person", value="Alice Brown, CTO"),
+        LLMInferredFact(category="technology", value="Docker"),
+    ]
+    await review_service.save_facts(
+        source.id, company.id, facts, lines=lines, raw_lines=raw_lines
+    )
+
+    rows, total = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert total == 2
+    by_cat = {r.category: r for r in rows}
+    # Tagged fact: source_line has canonical_key prefix
+    assert by_cat["person"].source_line == "p: Alice Brown, CTO"
+    # Raw fact: source_line is raw text (no prefix)
+    assert by_cat["technology"].source_line == "They use Docker for containerization"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_raw_lines_relationship_match(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """save_facts with raw_lines — relationship fact matched against subordinate/manager."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    raw_lines = [
+        "Jane reports to Bob in the engineering org",
+        "The team ships weekly",
+    ]
+    facts = [
+        LLMInferredFact(
+            category="relationship",
+            value="Jane reports to Bob",
+            subordinate="Jane",
+            manager="Bob",
+        ),
+    ]
+    await review_service.save_facts(
+        source.id, company.id, facts, raw_lines=raw_lines
+    )
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="relationship", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    # Matched against "Jane" in the raw line — returns raw line as-is
+    assert rows[0].source_line == "Jane reports to Bob in the engineering org"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_raw_lines_no_prefix_in_attribution(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """Raw-mode attribution returns the raw line as-is — no canonical_key: prefix
+    is injected, unlike tagged-mode attribution which prepends 'key: '."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    raw_lines = [
+        "Alice is the CEO and founded the company in 2019",
+    ]
+    facts = [LLMInferredFact(category="person", value="Alice")]
+    await review_service.save_facts(
+        source.id, company.id, facts, raw_lines=raw_lines
+    )
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    # Raw line returned as-is — no "n:" or other prefix prepended
+    assert rows[0].source_line == "Alice is the CEO and founded the company in 2019"
+    assert not rows[0].source_line.startswith("n:")
+
+
+# ---------------------------------------------------------------------------
+# _match_raw_source_line — direct unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_match_raw_source_line_case_insensitive():
+    """Substring matching is case-insensitive."""
+    fact = LLMInferredFact(category="technology", value="kubernetes")
+    raw_lines = ["They use KUBERNETES for orchestration"]
+    result = ReviewService._match_raw_source_line(fact, raw_lines)
+    assert result == "They use KUBERNETES for orchestration"
+
+
+def test_match_raw_source_line_first_match_wins():
+    """When multiple lines match, the first one wins (preserves document order)."""
+    fact = LLMInferredFact(category="technology", value="Docker")
+    raw_lines = [
+        "The team uses Docker for local development",
+        "Docker is also used in CI/CD pipelines",
+    ]
+    result = ReviewService._match_raw_source_line(fact, raw_lines)
+    assert result == "The team uses Docker for local development"
+
+
+def test_match_raw_source_line_empty_list():
+    """Empty raw_lines list returns None."""
+    fact = LLMInferredFact(category="technology", value="Python")
+    result = ReviewService._match_raw_source_line(fact, [])
+    assert result is None
+
+
+def test_match_raw_source_line_relationship():
+    """Relationship facts match against subordinate or manager name."""
+    fact = LLMInferredFact(
+        category="relationship",
+        value="Alice reports to Bob",
+        subordinate="Alice",
+        manager="Bob",
+    )
+    raw_lines = [
+        "The engineering team is growing",
+        "Alice reports directly to Bob in the org chart",
+    ]
+    result = ReviewService._match_raw_source_line(fact, raw_lines)
+    assert result == "Alice reports directly to Bob in the org chart"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_save_facts_hybrid_tagged_takes_precedence(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo
+):
+    """Hybrid attribution: fact value appears in both a tagged line and a raw line →
+    tagged match takes precedence (best-effort per §9.5)."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    lines = [
+        ParsedLine(canonical_key="t", text="Docker and containerization"),
+    ]
+    raw_lines = [
+        "They also mentioned Docker in passing",
+    ]
+    facts = [LLMInferredFact(category="technology", value="Docker")]
+    await review_service.save_facts(
+        source.id, company.id, facts, lines=lines, raw_lines=raw_lines
+    )
+
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", limit=100, offset=0
+    )
+    assert len(rows) == 1
+    # Tagged match takes precedence — has canonical_key prefix
+    assert rows[0].source_line == "t: Docker and containerization"

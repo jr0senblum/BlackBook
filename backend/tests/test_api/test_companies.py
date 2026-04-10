@@ -224,3 +224,78 @@ async def test_delete_company_not_found(client: AsyncClient) -> None:
     fake_id = str(uuid4())
     response = await client.delete(f"/api/v1/companies/{fake_id}")
     assert response.status_code == 404
+
+
+# ── llm_context_mode ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_company_includes_default_llm_context_mode(
+    client: AsyncClient,
+) -> None:
+    """GET /companies/{id} includes llm_context_mode with default 'accepted_facts'."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "CtxMode Default Corp"},
+    )
+    company_id = create_resp.json()["company_id"]
+    response = await client.get(f"/api/v1/companies/{company_id}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["llm_context_mode"] == "accepted_facts"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_llm_context_mode_to_full(
+    client: AsyncClient,
+) -> None:
+    """PUT /companies/{id} with llm_context_mode='full' updates correctly."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "CtxMode Full Corp"},
+    )
+    company_id = create_resp.json()["company_id"]
+    response = await client.put(
+        f"/api/v1/companies/{company_id}",
+        json={"llm_context_mode": "full"},
+    )
+    assert response.status_code == 200
+    assert response.json()["llm_context_mode"] == "full"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_company_llm_context_mode_invalid(
+    client: AsyncClient,
+) -> None:
+    """PUT /companies/{id} with invalid llm_context_mode returns 422."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "CtxMode Invalid Corp"},
+    )
+    company_id = create_resp.json()["company_id"]
+    response = await client.put(
+        f"/api/v1/companies/{company_id}",
+        json={"llm_context_mode": "invalid_value"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_company_default_llm_context_mode(
+    client: AsyncClient,
+) -> None:
+    """POST /companies creates with default llm_context_mode (not settable at creation)."""
+    await _ensure_authenticated(client)
+    create_resp = await client.post(
+        "/api/v1/companies",
+        json={"name": "CtxMode Create Corp"},
+    )
+    assert create_resp.status_code == 201
+    company_id = create_resp.json()["company_id"]
+    # Verify the default via GET
+    get_resp = await client.get(f"/api/v1/companies/{company_id}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["llm_context_mode"] == "accepted_facts"

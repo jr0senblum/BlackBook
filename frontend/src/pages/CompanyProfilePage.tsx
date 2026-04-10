@@ -21,6 +21,7 @@ function CompanyProfilePage() {
   const [editName, setEditName] = useState("");
   const [editMission, setEditMission] = useState("");
   const [editVision, setEditVision] = useState("");
+  const [editContextMode, setEditContextMode] = useState("");
   const [editError, setEditError] = useState("");
   const [saving, setSaving] = useState(false);
 
@@ -50,6 +51,7 @@ function CompanyProfilePage() {
       setEditName(data.name);
       setEditMission(data.mission ?? "");
       setEditVision(data.vision ?? "");
+      setEditContextMode(data.llm_context_mode);
       setError("");
     } catch (err) {
       if (err instanceof ApiRequestError) {
@@ -103,6 +105,7 @@ function CompanyProfilePage() {
         name: editName,
         mission: editMission || undefined,
         vision: editVision || undefined,
+        llm_context_mode: editContextMode,
       });
       setCompany(updated);
       setEditing(false);
@@ -216,6 +219,18 @@ function CompanyProfilePage() {
           <div className="detail-section">
             <h3>Vision</h3>
             <p>{company.vision || "—"}</p>
+          </div>
+          <div className="detail-section">
+            <h3>LLM Context Mode</h3>
+            <p>
+              {company.llm_context_mode === "none"
+                ? "No context"
+                : company.llm_context_mode === "accepted_facts"
+                  ? "Accepted facts only (default)"
+                  : company.llm_context_mode === "full"
+                    ? "Full context (facts + prior sources)"
+                    : company.llm_context_mode}
+            </p>
           </div>
           <div className="detail-section">
             <h3>Pending Items</h3>
@@ -404,6 +419,22 @@ function CompanyProfilePage() {
                 rows={3}
               />
             </div>
+            <div className="form-group">
+              <label htmlFor="edit-context-mode">LLM Context Mode</label>
+              <select
+                id="edit-context-mode"
+                value={editContextMode}
+                onChange={(e) => setEditContextMode(e.target.value)}
+              >
+                <option value="none">No context</option>
+                <option value="accepted_facts">
+                  Accepted facts only (default)
+                </option>
+                <option value="full">
+                  Full context (facts + prior sources)
+                </option>
+              </select>
+            </div>
             {editError && <div className="error-message">{editError}</div>}
             <div style={{ display: "flex", gap: 8 }}>
               <button type="submit" disabled={saving}>
@@ -417,6 +448,7 @@ function CompanyProfilePage() {
                   setEditName(company.name);
                   setEditMission(company.mission ?? "");
                   setEditVision(company.vision ?? "");
+                  setEditContextMode(company.llm_context_mode);
                 }}
               >
                 Cancel

@@ -71,6 +71,32 @@ async def test_upload_with_nc_prefix(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_upload_tagless_with_company_id_param(client: AsyncClient) -> None:
+    """POST /sources/upload with a completely tagless file succeeds when
+    company_id form param is provided (§17 requirement)."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    # File has no prefixes at all — entirely unstructured text
+    content = "Alice is the CEO and founded the company in 2019\nThey use Python and Kubernetes"
+    response = await client.post(
+        "/api/v1/sources/upload",
+        files={"file": ("notes.txt", content.encode(), "text/plain")},
+        data={"company_id": company_id},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert "source_id" in data
+    assert data["status"] == "pending"
+
+    # Verify the source is routed to the correct company
+    source_id = data["source_id"]
+    detail = await client.get(f"/api/v1/sources/{source_id}")
+    assert detail.status_code == 200
+    assert detail.json()["company_id"] == company_id
+    assert detail.json()["raw_content"] == content
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_upload_without_routing_fails(client: AsyncClient) -> None:
     """POST /sources/upload without any routing → 422."""
     await _ensure_authenticated(client)

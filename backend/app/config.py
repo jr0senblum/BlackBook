@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     llm_api_url: str = ""
     llm_model: str = ""
     llm_max_attempts: int = 3  # total attempts (initial + retries)
+    llm_context_max_chars: int = 8000  # max chars for company context in LLM prompts
 
     # File storage
     data_dir: str = "./data"

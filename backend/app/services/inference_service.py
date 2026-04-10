@@ -72,6 +72,54 @@ reclassify based on content.
 7. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
 """
 
+RAW_SYSTEM_PROMPT = """\
+You are an expert information extractor for a company intelligence system.
+
+You will receive unstructured free-form text about a company. Read the text \
+carefully and extract all identifiable business facts into structured JSON.
+
+Return ONLY a JSON array of objects. Each object represents one extracted fact.
+
+Rules:
+1. Each element MUST have "category" and "value" fields. The "value" field is REQUIRED \
+for ALL categories, including relationships.
+2. Valid categories: functional-area, person, relationship, technology, process, \
+cgkra-cs, cgkra-gw, cgkra-kp, cgkra-rm, cgkra-aop, swot-s, swot-w, swot-o, \
+swot-th, action-item, other.
+3. For relationship facts, you MUST include ALL THREE fields: "value" (a human-readable \
+summary like "Jane Smith reports to Bob Jones"), "subordinate", and "manager" (both \
+non-empty strings). Example: {"category": "relationship", "value": "Jane Smith reports \
+to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones"}.
+4. Extract people with their titles when mentioned (e.g., "Jane Doe, VP Engineering").
+5. Extract reporting relationships when the text describes who reports to whom.
+6. For CGKRA facts (current state, going well, key problems, roadmap, annual operating \
+plan) and SWOT facts (strengths, weaknesses, opportunities, threats), use the \
+appropriate category.
+7. Decompose compound statements into individual facts. For example, "They use \
+Kubernetes and Terraform" should produce two technology facts.
+8. Only use "other" for content that cannot be classified into any specific category.
+9. If company context is provided below, use it to disambiguate people, teams, and \
+terminology. Do NOT extract facts that duplicate information already present in the \
+company context.
+10. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
+"""
+
+
+def _build_raw_system_prompt(company_context: str | None) -> str:
+    """Build the system prompt for raw extraction, optionally with company context.
+
+    Company context is injected into the system prompt (not the user message)
+    per §9.5 — maintains the role boundary between instructions and source text.
+    """
+    if company_context is None:
+        return RAW_SYSTEM_PROMPT
+    return (
+        RAW_SYSTEM_PROMPT
+        + "\n=== COMPANY CONTEXT ===\n"
+        + company_context
+        + "\n=== END CONTEXT ==="
+    )
+
 
 def _build_user_message(lines: list[ParsedLine]) -> str:
     """Format parsed lines into the LLM user message.
@@ -192,7 +240,30 @@ class InferenceService:
         raw_response = await self._call_llm(user_message)
         return _validate_response(raw_response)
 
-    async def _call_llm(self, user_message: str) -> str:
+    async def extract_facts_raw(
+        self,
+        raw_text: str,
+        company_context: str | None = None,
+    ) -> list[LLMInferredFact]:
+        """Extract facts from unannotated free-form text via LLM.
+
+        Uses RAW_SYSTEM_PROMPT. Company context is injected into the system
+        prompt when provided. Same validation and retry policy as extract_facts().
+
+        Raises:
+            InferenceValidationError: LLM response failed validation.
+            InferenceApiError: LLM API call failed after retries exhausted.
+        """
+        if not raw_text or not raw_text.strip():
+            return []
+
+        system_prompt = _build_raw_system_prompt(company_context)
+        raw_response = await self._call_llm(raw_text, system_prompt=system_prompt)
+        return _validate_response(raw_response)
+
+    async def _call_llm(
+        self, user_message: str, system_prompt: str = SYSTEM_PROMPT
+    ) -> str:
         """Call the LLM API with retry policy per §9.5.
 
         Returns the raw text response on success.
@@ -204,9 +275,9 @@ class InferenceService:
         for attempt in range(self._max_attempts):
             try:
                 if provider == "anthropic":
-                    return await self._call_anthropic(user_message)
+                    return await self._call_anthropic(user_message, system_prompt)
                 elif provider == "openai":
-                    return await self._call_openai(user_message)
+                    return await self._call_openai(user_message, system_prompt)
                 else:
                     raise InferenceApiError(
                         f"Unknown LLM provider: {provider!r}"
@@ -263,7 +334,7 @@ class InferenceService:
             f"LLM API failed after {self._max_attempts} attempts"
         )
 
-    async def _call_anthropic(self, user_message: str) -> str:
+    async def _call_anthropic(self, user_message: str, system_prompt: str) -> str:
         """Call the Anthropic Messages API."""
         client = self._get_client()
         url = self._settings.llm_api_url or "https://api.anthropic.com/v1/messages"
@@ -279,7 +350,7 @@ class InferenceService:
             json={
                 "model": model,
                 "max_tokens": 4096,
-                "system": SYSTEM_PROMPT,
+                "system": system_prompt,
                 "messages": [
                     {"role": "user", "content": user_message},
                 ],
@@ -291,7 +362,7 @@ class InferenceService:
         # Anthropic returns content as a list of content blocks
         return data["content"][0]["text"]
 
-    async def _call_openai(self, user_message: str) -> str:
+    async def _call_openai(self, user_message: str, system_prompt: str) -> str:
         """Call the OpenAI Chat Completions API."""
         client = self._get_client()
         url = self._settings.llm_api_url or "https://api.openai.com/v1/chat/completions"
@@ -306,7 +377,7 @@ class InferenceService:
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message},
                 ],
                 "temperature": 0,

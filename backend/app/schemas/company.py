@@ -1,9 +1,10 @@
 """Pydantic request/response schemas for companies."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class CompanyCreate(BaseModel):
@@ -27,12 +28,22 @@ class CompanyUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=500)
     mission: str | None = None
     vision: str | None = None
+    llm_context_mode: str | None = None
 
     @model_validator(mode="after")
     def _reject_null_name(self) -> "CompanyUpdate":
         if "name" in self.model_fields_set and self.name is None:
             raise ValueError("name cannot be null")
         return self
+
+    @field_validator("llm_context_mode")
+    @classmethod
+    def _validate_llm_context_mode(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("none", "accepted_facts", "full"):
+            raise ValueError(
+                "llm_context_mode must be one of: none, accepted_facts, full"
+            )
+        return v
 
 
 class CompanyCreatedResponse(BaseModel):
@@ -61,12 +72,13 @@ class CompanyListResponse(BaseModel):
 
 
 class CompanyDetailResponse(BaseModel):
-    """GET /companies/{id} response — Phase 1 returns just the company fields."""
+    """GET /companies/{id} response."""
 
     id: UUID
     name: str
     mission: str | None
     vision: str | None
+    llm_context_mode: str
     created_at: datetime
     updated_at: datetime
     pending_count: int

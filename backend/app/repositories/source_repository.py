@@ -79,6 +79,28 @@ class SourceRepository:
 
         return items, total
 
+    async def list_processed_content(
+        self,
+        company_id: UUID,
+        *,
+        limit: int = 20,
+    ) -> list[tuple[str, str | None]]:
+        """Return (filename_or_subject, raw_content) for processed sources.
+
+        Ordered by received_at DESC.  Used by context assembly in ``full`` mode.
+        The ``limit`` caps the query to prevent loading unbounded content.
+        """
+        result = await self._db.execute(
+            select(Source.filename_or_subject, Source.raw_content)
+            .where(
+                Source.company_id == company_id,
+                Source.status == "processed",
+            )
+            .order_by(Source.received_at.desc())
+            .limit(limit)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
     async def update_status(
         self,
         source_id: UUID,
