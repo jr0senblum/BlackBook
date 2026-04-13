@@ -92,16 +92,19 @@ non-empty strings). Example: {"category": "relationship", "value": "Jane Smith r
 to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones"}.
 4. Extract people with their titles when mentioned (e.g., "Jane Doe, VP Engineering").
 5. Extract reporting relationships when the text describes who reports to whom.
-6. For CGKRA facts (current state, going well, key problems, roadmap, annual operating \
+6. Extract functional areas / team names when mentioned (e.g., "engineering team", \
+"product", "sales", "marketing"). If someone "runs the engineering team", both a \
+person fact AND a functional-area fact ("Engineering") should be extracted.
+7. For CGKRA facts (current state, going well, key problems, roadmap, annual operating \
 plan) and SWOT facts (strengths, weaknesses, opportunities, threats), use the \
 appropriate category.
-7. Decompose compound statements into individual facts. For example, "They use \
+8. Decompose compound statements into individual facts. For example, "They use \
 Kubernetes and Terraform" should produce two technology facts.
-8. Only use "other" for content that cannot be classified into any specific category.
-9. If company context is provided below, use it to disambiguate people, teams, and \
+9. Only use "other" for content that cannot be classified into any specific category.
+10. If company context is provided below, use it to disambiguate people, teams, and \
 terminology. Do NOT extract facts that duplicate information already present in the \
 company context.
-10. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
+11. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
 """
 
 
