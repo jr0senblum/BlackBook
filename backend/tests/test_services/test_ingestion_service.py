@@ -1528,3 +1528,151 @@ async def test_process_source_raw_mode_raw_text_content(
     raw_text_arg = call_args[0][0] if len(call_args[0]) > 0 else call_args[1].get("raw_text")
     # Should be the joined text of the two defaulted lines (routing excluded by parse)
     assert raw_text_arg == "Alice is the CEO\nBob runs engineering"
+
+
+# ═════════════════════════════════════════════════════════════════
+# Tagged vs. raw parity: same content produces same facts
+# ═════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_tagged_and_raw_same_content_produce_same_persisted_facts(
+    db_session: AsyncSession,
+    source_repo: SourceRepository,
+    inferred_fact_repo: InferredFactRepository,
+    company_repo: CompanyRepository,
+    test_settings: Settings,
+) -> None:
+    """Given identical intel — one as tagged markup, one as plain prose — both
+    extraction paths produce the same set of persisted facts when the LLM
+    (mocked) returns the same output for both.
+
+    This verifies the pipeline handles both modes symmetrically: mode detection
+    routes correctly, extraction is called with the right method, and save_facts
+    receives the same fact list regardless of input format.
+    """
+    from app.schemas.inferred_fact import LLMInferredFact
+
+    # The identical facts that "the LLM" will return for both formats.
+    canonical_facts = [
+        LLMInferredFact(category="person", value="Alice Chen, CEO"),
+        LLMInferredFact(category="technology", value="Kubernetes"),
+        LLMInferredFact(category="functional-area", value="Engineering"),
+        LLMInferredFact(
+            category="relationship",
+            value="Bob reports to Alice",
+            subordinate="Bob",
+            manager="Alice Chen",
+        ),
+        LLMInferredFact(category="action-item", value="schedule follow-up for Q3"),
+    ]
+
+    # ── Tagged version (explicit prefixes) ───────────────────────
+    tagged_content = (
+        "p: Alice Chen, CEO\n"
+        "tech: Kubernetes\n"
+        "fn: Engineering\n"
+        "rel: Bob > Alice Chen\n"
+        "a: schedule follow-up for Q3"
+    )
+
+    # ── Raw version (same intel, no prefixes) ────────────────────
+    raw_content = (
+        "Alice Chen is the CEO\n"
+        "They use Kubernetes for orchestration\n"
+        "The Engineering team is the primary functional area\n"
+        "Bob reports to Alice Chen\n"
+        "Need to schedule follow-up for Q3"
+    )
+
+    # Mock inference: both methods return the same canonical facts.
+    mock_inf = AsyncMock()
+    mock_inf.extract_facts.return_value = list(canonical_facts)
+    mock_inf.extract_facts_raw.return_value = list(canonical_facts)
+
+    # Use a real-ish mock for review_service that captures calls.
+    mock_rev = AsyncMock()
+
+    name = f"Parity-{uuid4().hex[:8]}"
+    company = await company_repo.create(name)
+
+    # ── Process tagged source ────────────────────────────────────
+    tagged_source = await source_repo.create(
+        company_id=company.id,
+        type="upload",
+        filename_or_subject="tagged.txt",
+        raw_content=tagged_content,
+    )
+
+    svc_tagged = IngestionService(
+        source_repo=source_repo,
+        inferred_fact_repo=inferred_fact_repo,
+        company_repo=company_repo,
+        inference_service=mock_inf,
+        review_service=mock_rev,
+        ingestion_queue=AsyncMock(),
+        settings=test_settings,
+    )
+
+    await svc_tagged.process_source(str(tagged_source.id))
+
+    # Capture what save_facts received for tagged mode.
+    assert mock_rev.save_facts.call_count == 1
+    tagged_call = mock_rev.save_facts.call_args
+    tagged_facts_arg = tagged_call[0][2]  # positional arg 3: facts list
+
+    # ── Reset mocks for raw pass ─────────────────────────────────
+    mock_inf.reset_mock()
+    mock_inf.extract_facts.return_value = list(canonical_facts)
+    mock_inf.extract_facts_raw.return_value = list(canonical_facts)
+    mock_rev.reset_mock()
+
+    raw_source = await source_repo.create(
+        company_id=company.id,
+        type="upload",
+        filename_or_subject="raw.txt",
+        raw_content=raw_content,
+    )
+
+    svc_raw = IngestionService(
+        source_repo=source_repo,
+        inferred_fact_repo=inferred_fact_repo,
+        company_repo=company_repo,
+        inference_service=mock_inf,
+        review_service=mock_rev,
+        ingestion_queue=AsyncMock(),
+        settings=test_settings,
+    )
+
+    await svc_raw.process_source(str(raw_source.id))
+
+    # Capture what save_facts received for raw mode.
+    assert mock_rev.save_facts.call_count == 1
+    raw_call = mock_rev.save_facts.call_args
+    raw_facts_arg = raw_call[0][2]  # positional arg 3: facts list
+
+    # ── Verify: same facts, same order, same content ─────────────
+    assert len(tagged_facts_arg) == len(raw_facts_arg) == len(canonical_facts)
+    for tagged_fact, raw_fact, expected in zip(
+        tagged_facts_arg, raw_facts_arg, canonical_facts
+    ):
+        assert tagged_fact.category == raw_fact.category == expected.category
+        assert tagged_fact.value == raw_fact.value == expected.value
+        if expected.category == "relationship":
+            assert tagged_fact.subordinate == raw_fact.subordinate == expected.subordinate
+            assert tagged_fact.manager == raw_fact.manager == expected.manager
+
+    # ── Verify: correct extraction method was called per mode ────
+    # Tagged: extract_facts only
+    mock_inf_tagged_calls = mock_inf.extract_facts.call_count
+    mock_inf_raw_calls = mock_inf.extract_facts_raw.call_count
+    # For raw source: extract_facts_raw was called, not extract_facts
+    assert mock_inf_raw_calls == 1
+    # extract_facts should NOT have been called for the raw source
+    assert mock_inf_tagged_calls == 0
+
+    # ── Verify: both sources marked processed ────────────────────
+    tagged_updated = await source_repo.get_by_id(tagged_source.id)
+    raw_updated = await source_repo.get_by_id(raw_source.id)
+    assert tagged_updated is not None and tagged_updated.status == "processed"
+    assert raw_updated is not None and raw_updated.status == "processed"
