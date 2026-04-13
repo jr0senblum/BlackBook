@@ -1,4 +1,0 @@
-Alice Chen is the CEO and co-founded the company in 2019.
-Bob Smith runs the engineering team and reports to Alice.
-They use Kubernetes for container orchestration.
-The team needs to schedule a follow-up meeting for Q3.
