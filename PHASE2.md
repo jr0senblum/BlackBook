@@ -12,7 +12,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 - Source endpoints: POST /sources/upload, GET /companies/{id}/sources, GET /sources/{id}, GET /sources/{id}/status, POST /sources/{id}/retry
 - Background worker for async ingestion (ingestion_worker.py)
 - Pending review endpoints: GET /companies/{id}/pending, POST .../accept, POST .../dismiss
-- Accept flow for ALL categories (person, functional-area, action-item, relationship, technology, process, cgkra-*, swot-*, other)
+- Accept flow for ALL categories (person, functional-area, action-item, relationship, technology, process, product, cgkra-*, swot-*, other)
 - Dismiss flow
 - Frontend: file upload, source list, pending review queue, accepted entities on company profile
 
@@ -33,7 +33,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 **Goal**: implement the pure-computation prefix parser that normalizes raw source text into a typed `ParsedSource` struct. No I/O, no database, no LLM.
 
 - Create `backend/app/services/prefix_parser_service.py`
-  - Define `ParsedLine` dataclass: `canonical_key: str`, `text: str`
+  - Define `ParsedLine` dataclass: `canonical_key: str`, `text: str`, `defaulted: bool = False` (True if the line had no recognized prefix and was auto-assigned to `n:`)
   - Define `ParsedSource` dataclass: `nc`, `c`, `cid`, `who`, `date`, `src` (all `str | None`), `lines: list[ParsedLine]`
   - Define `CANONICAL_MAP: dict[str, str]` — the full alias map from §6.1
   - Define routing keys: `{"nc", "c", "cid"}`
@@ -44,10 +44,10 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
     - If matched: resolve to canonical key; extract text after the colon (stripped)
     - If canonical key is a routing key (`nc`, `c`, `cid`): store in corresponding `ParsedSource` field
     - If canonical key is a metadata key (`who`, `date`, `src`): store in corresponding `ParsedSource` field
-    - If canonical key is `rel`: validate `>` separator is present in text; if absent, emit as `ParsedLine(canonical_key="n", text=<full line>)` — no error
+    - If canonical key is `rel`: validate `>` separator is present in text; if absent, emit as `ParsedLine(canonical_key="n", text=<full line>, defaulted=False)` — the investigator used a recognized prefix (just with a syntax error), so `defaulted` remains False for mode detection
     - Otherwise: emit `ParsedLine(canonical_key=<canonical>, text=<text after colon>)`
-    - Unrecognized prefix: emit as `ParsedLine(canonical_key="n", text=<full line>)` and log warning
-    - Lines with no colon or no prefix match: emit as `ParsedLine(canonical_key="n", text=<full line>)`
+    - Unrecognized prefix: emit as `ParsedLine(canonical_key="n", text=<full line>, defaulted=True)` and log warning
+    - Lines with no colon or no prefix match: emit as `ParsedLine(canonical_key="n", text=<full line>, defaulted=True)`
   - PrefixParserService does NOT: call the LLM, validate routing against DB, enforce exactly-one routing field, split comma-separated values
   - **Known deferral (§6.1)**: the spec requires `CANONICAL_MAP` to be "defined in configuration and modifiable without a code change." Phase 2 hardcodes it as a Python constant — the default map from §6.1. Config-driven loading (via Settings or a JSON file) is deferred to Phase 5 when the Settings page gains real functionality. The current constant serves as the default fallback when that work is done.
 - Write exhaustive tests in `backend/tests/test_services/test_prefix_parser_service.py`
@@ -202,7 +202,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
 - Create domain exceptions:
   - `RoutingError(DomainError)` — code: `routing_error`, status: 422
   - `SourceNotFoundError(DomainError)` — code: `source_not_found`, status: 404
-  - `SourceNotFailedError(DomainError)` — code: `source_not_failed`, status: 409
+  - `SourceNotFailedError(DomainError)` — code: `state_conflict`, status: 409
 - Implement background worker in `backend/app/workers/ingestion_worker.py`
   - Simple in-process asyncio task queue (per §8 — no Celery, no SQS)
   - `IngestionQueue` class:
@@ -284,7 +284,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
       - `**functional-area**`: check if a functional area with the same name already exists for this company via `FunctionalAreaRepository.get_by_name_iexact(company_id, inferred_value)`; if found, reuse the existing row (do NOT create a duplicate) and mark the fact accepted; if not found, create a new `functional_areas` row with `name = inferred_value` via `FunctionalAreaRepository.create()`. This handles the `UNIQUE(company_id, name)` constraint — multiple inferred facts referencing the same functional area (common across sources) will not cause an IntegrityError. Return the functional area's ID (new or existing).
       - `**action-item**`: create `action_items` row with `description = inferred_value`, `source_id` from fact's source, `inferred_fact_id = fact_id`, `company_id`, `person_id = null`, `functional_area_id = null` via `ActionItemRepository.create()`. Return the new action item's ID.
       - `**relationship**`: parse `inferred_value` to extract subordinate and manager names. For each name: (1) case-insensitive exact match against persons for this company — exactly one match → use that ID; (2) no match → create stub person (`name`, `title=null`); (3) multiple matches → use first match (Phase 3 will add fuzzy scoring). Insert `relationships` row. Set `persons.reports_to_person_id = manager_person_id` on the subordinate record. Return the new relationship row's ID.
-      - **All others** (`technology`, `process`, `cgkra-`*, `swot-*`, `other`): no entity creation — just mark accepted. Return `None`.
+      - **All others** (`technology`, `process`, `product`, `cgkra-`*, `swot-*`, `other`): no entity creation — just mark accepted. Return `None`.
     - Set InferredFact `status = 'accepted'`, `reviewed_at = now()`
   - `async def dismiss_fact(company_id: str, fact_id: str) -> None`:
     - Load InferredFact; verify `status == 'pending'` and `company_id` matches
@@ -312,6 +312,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
   - `accept_fact` — **relationship**: resolves names to person IDs; creates relationship row; sets reports_to_person_id
   - `accept_fact` — **relationship** with unknown names: creates stub person records
   - `accept_fact` — **technology**: marks accepted, no entity creation
+  - `accept_fact` — **product**: marks accepted, no entity creation
   - `accept_fact` — **cgkra-kp**: marks accepted, no entity creation
   - `accept_fact` — **swot-s**: marks accepted, no entity creation
   - `accept_fact` — **other**: marks accepted, no entity creation
@@ -406,7 +407,7 @@ Reference: REQUIREMENTS.md §5 (UCs 3–5, 16–18), §6.1 (canonical prefix map
   - [x] Replace "People" placeholder with a simple list of accepted persons fetched via `listPending(companyId, { status: 'accepted', category: 'person' })`. **This is a Phase 2 workaround that MUST be replaced in Phase 3** when `GET /companies/{id}/people` is implemented, because this reads from `inferred_facts` (the inferred value) rather than from the `persons` table and will not reflect edits made directly to person records.
   - [x] Replace "Sources" placeholder with `<SourceList companyId={id} />`
   - [x] Add "Pending Review" section with `<PendingReviewQueue companyId={id} />` — shown prominently if `pending_count > 0`
-  - [x] Show accepted technologies via `listPending(companyId, { status: 'accepted', category: 'technology' })` and processes via `listPending(companyId, { status: 'accepted', category: 'process' })` as simple lists
+   - [x] Show accepted technologies via `listPending(companyId, { status: 'accepted', category: 'technology' })`, processes via `listPending(companyId, { status: 'accepted', category: 'process' })`, and products via `listPending(companyId, { status: 'accepted', category: 'product' })` as simple lists
   - [x] Show accepted functional areas via `listPending(companyId, { status: 'accepted', category: 'functional-area' })`
 - [x] Update `frontend/src/index.css` with styles for:
   - [x] Source list items with status badges (pending=yellow, processing=blue, processed=green, failed=red)
@@ -469,7 +470,7 @@ All of the following are true:
 - [x] Pending review queue lists all pending InferredFacts for a company (Unit 5 service + Unit 6 API — list_pending tests)
 - [x] Accept flow works correctly for ALL categories: person (name+title parse), functional-area (create row), action-item (promote to action_items), relationship (name resolution + stub creation), all others (mark accepted) (Unit 5 — 16 accept tests + Unit 6 API tests)
 - [x] Dismiss flow marks InferredFacts as dismissed (Unit 5 + Unit 6)
-- [x] Company profile page shows: file upload, source list with status, pending review queue, accepted people/technologies/processes (Unit 7 — frontend build verified)
+- [x] Company profile page shows: file upload, source list with status, pending review queue, accepted people/technologies/processes/products (Unit 7 — frontend build verified)
 - [x] All pytest tests pass (Phase 1 + Phase 2), repeatable across runs (367 passing)
 - [x] No regressions in Phase 1 functionality
 

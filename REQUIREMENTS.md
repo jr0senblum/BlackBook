@@ -4,7 +4,7 @@
 
 BlackBook is a personal intelligence application for a single investigator conducting structured deep-dive discovery of companies. The investigator gathers information through three channels: interviews with multiple stakeholders, personal obserevations, and documents about the company from employees, press, etc. The work is iterative — the investigator may be building understanding of multiple companies simultaneously and returns to each over time, continuously adding new information and refining their understanding of each organization.
 
-BlackBook accepts raw notes via email or file upload, automatically determining whether the content describes a new company or provides additional information about an existing one. It then uses AI to extract and infer structured information: people, titles, job functions, org structure, functional areas, technology used, process health, technical and non-technical challenges, and action plans. Notes are organized into CGKRA categories — Current State, Going Well, Known Problems, Roadmap, and Art-of-the-possible — based on investigator-supplied tags; investigators may also explicitly tag SWOT signals (Strengths, Weaknesses, Opportunities, Threats) from interviews. Neither CGKRA nor SWOT signals are inferred by the AI — all such categorizations are explicitly entered by the investigator via the prefix language system. This structured information is presented through a navigable visual interface organized by org structure and functional area, with hyperlinks, visuals, and notes that make it easy for the investigator to understand the company being discovered.
+BlackBook accepts raw notes via email or file upload, automatically determining whether the content describes a new company or provides additional information about an existing one. It then uses AI to extract and infer structured information: people, titles, job functions, org structure, functional areas, products, technology used, process health, technical and non-technical challenges, and action plans. Notes are organized into CGKRA categories — Current State, Going Well, Known Problems, Roadmap, and Art-of-the-possible — based on investigator-supplied tags; investigators may also explicitly tag SWOT signals (Strengths, Weaknesses, Opportunities, Threats) from interviews. Neither CGKRA nor SWOT signals are inferred by the AI — all such categorizations are explicitly entered by the investigator via the prefix language system. This structured information is presented through a navigable visual interface organized by org structure and functional area, with hyperlinks, visuals, and notes that make it easy for the investigator to understand the company being discovered.
 
 Because AI inference is imperfect, no extracted fact is committed to a company profile until the investigator has reviewed and either accepted or corrected it. The investigator retains full authority over what is treated as fact. All information in the system is editable by the investigator.
 
@@ -55,22 +55,22 @@ Concrete scenarios describing how users interact with the system.
 - Use Case 1:
   - Actor : Investigator
   - Description: The Investigator is able to email notes to the application to be ingested by BlackBook to create a new company
-  - Success Criteria: Email is digested, the contents are processed, a new company is created using the contents of the email to establish at least the Company name plus additional fields inferable such as: Mission, Vision, people, org structure, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
+  - Success Criteria: Email is digested, the contents are processed, a new company is created using the contents of the email to establish at least the Company name plus additional fields inferable such as: Mission, Vision, people, org structure, products, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
   - Priority: Ought to  Have
 - Use Case 2:
   - Actor : Investigator
   - Description: The Investigator is able to email notes to the application to be ingested by BlackBook to update an existing company
-  - Success Criteria: Email is digested, the contents are processed, an existing company is recognized and updated using the contents of the email to establish one or more of: Mission, Vision, people, org structure, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
+  - Success Criteria: Email is digested, the contents are processed, an existing company is recognized and updated using the contents of the email to establish one or more of: Mission, Vision, people, org structure, products, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
   - Priority: Ought to  Have
 - Use Case 3:
   - Actor : Investigator
   - Description: The Investigator is able to upload notes to the application to be ingested by BlackBook to create a new company
-  - Success Criteria: Document is digested, the contents are processed, a new company is created using the contents of the document to establish at least the Company name plus additional fields inferable such as: Mission, Vision, people, org structure, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
+  - Success Criteria: Document is digested, the contents are processed, a new company is created using the contents of the document to establish at least the Company name plus additional fields inferable such as: Mission, Vision, people, org structure, products, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
   - Priority: Must Have
 - Use Case 4:
   - Actor : Investigator
   - Description: The Investigator is able to upload notes to the application to be ingested by BlackBook to update an existing company
-  - Success Criteria: Document is digested, the contents are processed, an existing company is recognized and updated using the contents of the documnet to establish one or more of: Mission, Vision, people, org structure, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
+  - Success Criteria: Document is digested, the contents are processed, an existing company is recognized and updated using the contents of the documnet to establish one or more of: Mission, Vision, people, org structure, products, processess, technical or process details, and any CGKRA or SWOT signals explicitly tagged by the investigator in the notes.
   - Priority: Must Have
 - Use Case 5:
   - Actor : Investigator
@@ -104,7 +104,7 @@ Concrete scenarios describing how users interact with the system.
   - Priority: Nice to Have
 - Use Case 11:
   - Actor: Investigator
-  - Description: BlackBook surfaces a coverage view showing which standard discovery areas (Mission, Org, Tech Stack, Processes, CGKRA) have sparse or no information for a given company, helping the investigator identify where to focus next.
+  - Description: BlackBook surfaces a coverage view showing which standard discovery areas (Mission, Org, Tech Stack, Products, Processes, CGKRA) have sparse or no information for a given company, helping the investigator identify where to focus next.
   - Success Criteria: Each discovery area is shown with a clear indicator of data density (populated, sparse, or empty); the investigator can navigate from any gap directly to the relevant section of the company profile.
   - Priority: Nice to Have
 - Use Case 12:
@@ -130,7 +130,7 @@ Concrete scenarios describing how users interact with the system.
 - Use Case 16:
   - Actor: Investigator
   - Description: The investigator optionally prefixes lines in their notes with short tags to guide AI extraction. Tags are normalized by the system to canonical keys before the content is passed to the LLM inference engine, reducing extraction ambiguity. For example, `+:`, `str:`, and `strength:` all resolve to the canonical key `s:` (SWOT strength). Lines without a prefix default to `n:` (plain note). Company routing prefixes (`nc:`, `c:`, `cid:`) are reserved for directing which company record the source belongs to and are stripped before LLM inference — they are not passed to the model. The canonical map is defined in configuration and can be modified by the investigator. The default canonical map is defined in section 6.1.
-  - Success Criteria: Prefixed lines are correctly normalized to their canonical keys before LLM processing; untagged lines are treated as `n:` (plain note); company routing prefixes (`nc:`, `c:`, `cid:`) are consumed by the routing step and not forwarded to the LLM; the canonical map is readable and modifiable in configuration without a code change; the LLM receives unambiguous, structured input; unrecognized prefixes are treated as `n:` and flagged in the ingestion log.
+  - Success Criteria: Prefixed lines are correctly normalized to their canonical keys before LLM processing; untagged lines are treated as `n:` (plain note); company routing prefixes (`nc:`, `c:`, `cid:`) are consumed by the routing step and not forwarded to the LLM; the canonical map is readable and modifiable in configuration without a code change (initially hardcoded; config-driven loading in Phase 5); the LLM receives unambiguous, structured input; unrecognized prefixes are treated as `n:` and flagged in the ingestion log.
   - Priority: Must Have
 - Use Case 17:
   - Actor: Investigator
@@ -159,13 +159,14 @@ What the system must do.
 - Email ingestion: receive and parse emails sent to a designated address, extract text and attachments for processing
 - Document ingestion: accept uploaded files (PDF, Word, text, etc.) and extract their contents for processing
 - Source management: list all ingested sources for a company with type, date, and processing status; surface failed ingestions with failure reason; allow the investigator to view raw source content and re-trigger processing of any failed source
-- AI inference engine: analyze ingested content to extract and infer people, titles, reporting relationships, org structure, functional areas, technology stack, processes, CGKRA signals, and SWOT signals; when prefix tags are present, use them to guide extraction; when no tags are present, extract facts directly from raw text using company context (previously accepted facts) to improve accuracy; when both tagged and untagged content are present, perform hybrid extraction (tagged pass + raw pass on remaining text); all extracted facts are subject to investigator review before committing to the company profile. The LLM output contract is:
+- AI inference engine: analyze ingested content to extract and infer people, titles, reporting relationships, org structure, functional areas, products, technology stack, processes, CGKRA signals, and SWOT signals; when prefix tags are present, use them to guide extraction; when no tags are present, extract facts directly from raw text using company context (previously accepted facts) to improve accuracy; when both tagged and untagged content are present, perform hybrid extraction (tagged pass + raw pass on remaining text); all extracted facts are subject to investigator review before committing to the company profile. The LLM output contract is:
   - **Output format**: a JSON array of InferredFact objects; each object must contain a `category` field (one of the valid InferredFact categories defined in 6.3) and a `value` field (non-empty string); relationship facts must additionally carry `subordinate` and `manager` fields reflecting the `rel: A > B` syntax. Example:
     ```json
     [
       { "category": "person", "value": "Jane Smith, VP Engineering" },
       { "category": "relationship", "subordinate": "Jane Smith", "manager": "Bob Jones" },
       { "category": "technology", "value": "Kubernetes" },
+      { "category": "product", "value": "CloudSync — enterprise file synchronization platform" },
       { "category": "cgkra-kp", "value": "Deployment pipeline is manual and error-prone" }
     ]
     ```
@@ -183,7 +184,7 @@ What the system must do.
 - Export: generate a formatted, downloadable PDF or doc briefing document for a company containing CGKRA analysis, any explicitly tagged SWOT signals, technology stack, and open action items; static org chart inclusion is a nice-to-have
 - Authentication: username/password login with first-time password setup and self-service password change
 - AI CGKRA document generation: produce a narrative CGKRA document for a company using an LLM, grounded in all investigator-tagged CGKRA notes and any explicitly tagged SWOT signals; support an optional user-supplied markdown template to control output structure; fall back to a default structure when no template is provided
-- Prefix language parser: before passing ingested content to the LLM, normalize line prefixes to canonical extraction keys using a configurable alias map; default untagged lines to `n:` (plain note); treat unrecognized prefixes as `n:` and log them; `nc:`, `c:`, and `cid:` are reserved routing prefixes intercepted before the LLM and used to identify which company a source belongs to (see §9.7); the canonical map is defined in configuration and requires no code change to modify. The default canonical map is:
+- Prefix language parser: before passing ingested content to the LLM, normalize line prefixes to canonical extraction keys using a configurable alias map; default untagged lines to `n:` (plain note); treat unrecognized prefixes as `n:` and log them; `nc:`, `c:`, and `cid:` are reserved routing prefixes intercepted before the LLM and used to identify which company a source belongs to (see §9.7); the canonical map is defined in configuration and requires no code change to modify (initially hardcoded as a Python constant; config-driven loading deferred to Phase 5 — see §17). The default canonical map is:
   ```python
   canonical_map = {
       "nc": "nc",                                    # new company — creates a new company with this name; fails if exact name already exists
@@ -197,6 +198,7 @@ What the system must do.
       "func": "fn", "area": "fn", "team": "fn",      # functional area
       "tech": "t", "stack": "t",                     # technology
       "process": "proc", "how": "proc",              # process
+      "product": "prod",                                # product
       # CGKRA categories — investigator-tagged; LLM organizes notes into these buckets
       "cs": "cs", "cur": "cs", "current": "cs",      # current state
       "gw": "gw", "well": "gw",                      # going well
@@ -227,6 +229,7 @@ What the system must do.
   | `fn`             | Functional area              | InferredFact — on acceptance, creates a new FunctionalArea record; use merge to link to an existing area (see §10.4) | `functional-area`     |
   | `t`              | Technology                   | InferredFact                                                                                                         | `technology`          |
   | `proc`           | Process                      | InferredFact                                                                                                         | `process`             |
+  | `prod`           | Product                      | InferredFact                                                                                                         | `product`             |
   | `cs`             | CGKRA: Current state         | InferredFact                                                                                                         | `cgkra-cs`            |
   | `gw`             | CGKRA: Going well            | InferredFact                                                                                                         | `cgkra-gw`            |
   | `kp`             | CGKRA: Known problems        | InferredFact                                                                                                         | `cgkra-kp`            |
@@ -237,7 +240,7 @@ What the system must do.
   | `o`              | SWOT: Opportunity            | InferredFact                                                                                                         | `swot-o`              |
   | `th`             | SWOT: Threat                 | InferredFact                                                                                                         | `swot-th`             |
   | `a`              | Action item                  | InferredFact                                                                                                         | `action-item`         |
-  | `n`              | Plain note                   | InferredFact — content stored as-is; no structured extraction                                                        | `other`               |
+  | `n`              | Plain note                   | InferredFact — LLM extracts any identifiable typed facts; unextractable remainder stored as `other` (see §9.5)       | *(varies)*            |
   | *(unrecognized)* | Unrecognized prefix          | Treated as `n`; logged in ingestion log                                                                              | `other`               |
 
   Notes: `functional-area` facts create a new FunctionalArea record on acceptance; use the merge action to link to an existing area instead. `other` is system-assigned — it is never a valid investigator-supplied prefix.
@@ -284,7 +287,7 @@ Nice-to-have:
 - Structured company profiles rendered in the web UI
 - Interactive org chart per company
 - CGKRA analysis per functional area and company-wide, with any explicitly tagged SWOT signals displayed alongside
-- AI-generated CGKRA narrative document (viewable in UI, downloadable as PDF or doc)
+- AI-generated CGKRA narrative document (viewable in UI, downloadable as Markdown)
 - Structured briefing document export (PDF or .docx)
 - Search result sets with links to originating company and source document
 - Action item list, filterable by company and status
@@ -292,13 +295,13 @@ Nice-to-have:
 
 **Key entities and storage requirements:**
 
-- **Company** — one record per discovered company; stores name, mission, vision, and `llm_context_mode` (controls what company context is sent to the LLM during raw/hybrid extraction: `"none"` = no context, `"accepted_facts"` = accepted/corrected inferred facts [default], `"full"` = accepted facts + raw content of prior processed sources); technology and process facts are not direct fields — they are InferredFacts with category `technology` or `process`, linked to the company via the `inferred_facts` table
-- **FunctionalArea** — a named area of the business (e.g., Engineering, Product, Sales, Finance, Operations); linked to a Company; inferred from ingested content or manually created; serves as the primary organizational grouping for people, facts, action items, and CGKRA synthesis
+- **Company** — one record per discovered company; stores name, mission, vision, and `llm_context_mode` (controls what company context is sent to the LLM during raw/hybrid extraction: `"none"` = no context, `"accepted_facts"` = accepted/corrected inferred facts [default], `"full"` = accepted facts + raw content of prior processed sources); technology, process, and product facts are not direct fields — they are InferredFacts with category `technology`, `process`, or `product`, linked to the company via the `inferred_facts` table
+- **FunctionalArea** — a named area of the business (e.g., Engineering, Product, Sales, Finance, Operations); linked to a Company; inferred from ingested content or manually created; serves as the primary organizational grouping for people, facts, action items, and CGKRA synthesis; carries an optional free-text `notes` field for investigator annotations about the area
 - **Person** — name, title, and reporting relationships; linked to a Company and to a primary FunctionalArea; a person may appear under multiple functional areas if their role spans them
 - **Source** — represents a single ingested unit (one email or one uploaded file); stores type (email | upload), raw content, filename or subject line, received timestamp, and processing status (pending | processing | processed | failed); linked to a Company
-- **InferredFact** — a single piece of information extracted by the AI from a Source; stores category (functional-area | person | relationship | technology | process | cgkra-cs | cgkra-gw | cgkra-kp | cgkra-rm | cgkra-aop | swot-s | swot-w | swot-o | swot-th | action-item | other), the raw inferred value, an optional investigator-supplied corrected value, status (pending | accepted | corrected | merged | dismissed), and a `source_line` (the originating tagged line from the parsed source, populated at save time; null if no match is found); linked to its Source, its Company, and optionally a FunctionalArea; every InferredFact must retain its Source link so the investigator can trace any fact back to its origin
+- **InferredFact** — a single piece of information extracted by the AI from a Source; stores category (functional-area | person | relationship | technology | process | product | cgkra-cs | cgkra-gw | cgkra-kp | cgkra-rm | cgkra-aop | swot-s | swot-w | swot-o | swot-th | action-item | other), the raw inferred value, an optional investigator-supplied corrected value, status (pending | accepted | corrected | merged | dismissed), and a `source_line` (the originating tagged line from the parsed source, populated at save time; null if no match is found); linked to its Source, its Company, and optionally a FunctionalArea; every InferredFact must retain its Source link so the investigator can trace any fact back to its origin
 - **ActionItem** — description, status (open | complete), and optional investigator notes; linked to a Company, optionally to a Person, and optionally to a FunctionalArea; may be inferred from a Source or manually created by the investigator
-- **CGKRATemplate** — name and raw Markdown content; uploaded by the investigator and reusable across companies
+- **CGKRATemplate** — name and file reference to Markdown content on disk; uploaded by the investigator and reusable across companies; immutable once uploaded (upload, list, delete only — no edit endpoint)
 - **GeneratedDocument** — type (briefing | cgkra-narrative), file reference or stored content, generation timestamp, and optionally the CGKRATemplate used; linked to a Company
 
 **Entity relationship summary:**
@@ -349,7 +352,7 @@ System qualities and constraints.
   - **Mechanism**: database-backed server-side sessions stored in PostgreSQL; a `sessions` table holds `(token, created_at, last_active_at)`; token is a cryptographically random 32-byte hex string; no JWT, no Redis, no in-memory store
   - **Transport**: session token delivered to the client as an `HttpOnly`, `Secure`, `SameSite=Strict` cookie named `session`
   - **Expiry**: rolling inactivity timeout — on every authenticated request the server checks `now − last_active_at`; if it exceeds the configured timeout the session is treated as expired and the request is rejected; `last_active_at` is updated on every successful authenticated request
-  - **Timeout**: configurable in application config; default 5 minutes of inactivity
+  - **Timeout**: configurable in application config; default 30 minutes of inactivity
   - **Logout**: session record is deleted from the database; the `session` cookie is cleared in the response
   - **Invalid or expired session**: returns 401 with `{ "error": { "code": "unauthenticated", "message": "Session missing or expired" } }`; the client must redirect to the login screen
 - Authorization: single-user model — an authenticated user has full access to all data; no role-based access control is needed
@@ -596,7 +599,7 @@ The LLM must return a JSON array conforming to the following schema. No other to
         "type": "string",
         "enum": [
           "functional-area", "person", "relationship",
-          "technology", "process", "cgkra-cs", "cgkra-gw", "cgkra-kp",
+          "technology", "process", "product", "cgkra-cs", "cgkra-gw", "cgkra-kp",
           "cgkra-rm", "cgkra-aop", "swot-s", "swot-w", "swot-o",
           "swot-th", "action-item", "other"
         ]
@@ -610,6 +613,10 @@ The LLM must return a JSON array conforming to the following schema. No other to
   }
 }
 ```
+
+**Relationship fact storage:**
+
+For `relationship` facts, the `inferred_value` stored on the `inferred_facts` row is `"subordinate > manager"` (constructed from the structured `subordinate` and `manager` fields), not the LLM's free-form `value` field. This ensures reliable re-parsing at accept time. The LLM's `value` field (e.g., "Jane Smith reports to Bob Jones") is human-readable context but is not persisted — the structured fields are authoritative.
 
 **Source line attribution:**
 
@@ -635,6 +642,7 @@ p: Jane Smith, VP Engineering
 fn: Platform Engineering
 rel: Jane Smith > Bob Jones
 tech: Kubernetes, Terraform
+prod: CloudSync — enterprise file synchronization platform
 kp: Deployment pipeline is manual and error-prone — every release requires two engineers on a call
 gw: Team shipped three major reliability improvements last quarter
 n: Jane mentioned they're evaluating Argo Rollouts but haven't decided yet; also noted that the on-call rotation is unsustainable with the current headcount of 8
@@ -651,6 +659,7 @@ p: Jane Smith, VP Engineering
 fn: Platform Engineering
 rel: Jane Smith > Bob Jones
 tech: Kubernetes, Terraform
+prod: CloudSync — enterprise file synchronization platform
 ```
 
 Expected output:
@@ -661,11 +670,12 @@ Expected output:
   { "category": "functional-area", "value": "Platform Engineering" },
   { "category": "relationship",  "value": "Jane Smith reports to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones" },
   { "category": "technology",    "value": "Kubernetes" },
-  { "category": "technology",    "value": "Terraform" }
+  { "category": "technology",    "value": "Terraform" },
+  { "category": "product",      "value": "CloudSync — enterprise file synchronization platform" }
 ]
 ```
 
-Notes: `tech:` with a comma-separated list produces one fact per technology. `rel:` always produces exactly one fact with both `subordinate` and `manager` populated. `value` for a relationship fact is a human-readable summary of the relationship.
+Notes: `tech:` with a comma-separated list produces one fact per technology. `rel:` always produces exactly one fact with both `subordinate` and `manager` populated. `value` for a relationship fact is a human-readable summary of the relationship. `prod:` creates a product fact with the value as-is.
 
 ---
 
@@ -761,6 +771,7 @@ PrefixParserService is responsible for all prefix-language parsing. Its output i
 class ParsedLine:
     canonical_key: str   # e.g. "p", "fn", "rel", "kp", "n"
     text: str            # content after the colon, stripped of leading/trailing whitespace
+    defaulted: bool = False  # True if the line had no recognized prefix and was auto-assigned to "n"
 
 @dataclass
 class ParsedSource:
@@ -777,12 +788,12 @@ At most one of `nc`, `c`, `cid` may be non-null. PrefixParserService does not en
 
 **Parsing rules:**
 
-- Lines that do not begin with a recognized prefix (or whose prefix is not in the canonical map) are emitted as `ParsedLine(canonical_key="n", text=<full line>)` — treated as plain notes
+- Lines that do not begin with a recognized prefix (or whose prefix is not in the canonical map) are emitted as `ParsedLine(canonical_key="n", text=<full line>, defaulted=True)` — treated as plain notes; the `defaulted` flag distinguishes these from investigator-supplied `n:` tags and is used by IngestionService for extraction mode detection (tagged vs. raw vs. hybrid)
 - `who:`, `date:`, `src:` are extracted into the metadata fields; they do not appear in `lines`
 - `nc:`, `c:`, `cid:` are extracted into their respective routing fields; they do not appear in `lines`
-- `rel:` lines are parsed syntactically by PrefixParserService to confirm the `>` separator is present; if malformed, the line is emitted as `ParsedLine(canonical_key="n", text=<full line>)` with no error — InferenceService will extract what it can
+- `rel:` lines are parsed syntactically by PrefixParserService to confirm the `>` separator is present; if malformed, the line is emitted as `ParsedLine(canonical_key="n", text=<full line>, defaulted=False)` with no error — the investigator used a recognized prefix (just with a syntax error), so `defaulted` remains `False` for mode detection purposes; InferenceService will extract what it can
 - Blank lines and comment lines (if any) are discarded
-- All other canonical keys (`p`, `fn`, `t`, `proc`, `cs`, `gw`, `kp`, `rm`, `aop`, `s`, `w`, `o`, `th`, `a`, `n`, and any future additions) are emitted verbatim into `lines`; PrefixParserService does not interpret their content
+- All other canonical keys (`p`, `fn`, `t`, `proc`, `prod`, `cs`, `gw`, `kp`, `rm`, `aop`, `s`, `w`, `o`, `th`, `a`, `n`, and any future additions) are emitted verbatim into `lines`; PrefixParserService does not interpret their content
 
 **What PrefixParserService does NOT do:**
 
@@ -828,7 +839,7 @@ The IngestionService applies the following algorithm synchronously before Infere
 
 **Upload endpoint shortcut:**
 
-`POST /sources/upload` accepts an optional `company_id` query parameter. If provided, the IngestionService treats it as equivalent to `cid:` routing — the source is routed directly to that company without requiring a routing prefix in the file content. If `company_id` is provided AND a routing prefix is present in the file, `company_id` takes precedence.
+`POST /sources/upload` accepts an optional `company_id` form field (part of the `multipart/form-data` payload). If provided, the IngestionService treats it as equivalent to `cid:` routing — the source is routed directly to that company without requiring a routing prefix in the file content. If `company_id` is provided AND a routing prefix is present in the file, `company_id` takes precedence.
 
 **`POST /companies` (manual create):**
 
@@ -941,7 +952,7 @@ All error responses use a consistent JSON envelope regardless of status code:
 | GET    | `/companies`      | List all companies (name, id, last-updated)                                |
 | POST   | `/companies`      | Manually create a company                                                  |
 | GET    | `/companies/{id}` | Full company profile (Company + People + CGKRA summary + coverage summary) |
-| PUT    | `/companies/{id}` | Update top-level company fields (name, mission, vision)                    |
+| PUT    | `/companies/{id}` | Update top-level company fields (name, mission, vision, llm_context_mode)  |
 | DELETE | `/companies/{id}` | Delete company and all associated data                                     |
 
 
@@ -1010,9 +1021,9 @@ Note: Email ingestion is handled by the background IMAP poller — there is no R
 - Query params: `limit` (int, default 50, max 200), `offset` (int, default 0), `category` (optional filter — one of the valid InferredFact categories)
 - Output: `{ "total": int, "limit": int, "offset": int, "items": [ { "fact_id", "category", "inferred_value", "source_id", "source_excerpt", "candidates": [ { "entity_id", "value", "similarity_score" } ] } ] }`
 - `candidates` meaning varies by category:
-  - `person`, `functional-area`, `action-item`: ranked list of existing same-category entities (persons, functional areas, action items) for the company; ordered by fuzzy similarity score against `inferred_value` descending
-  - `relationship`: ranked list of existing **persons** for the company, provided twice — once scored against the `subordinate` field, once against the `manager` field; the response shape for relationship facts is `"candidates": { "subordinate": [...], "manager": [...] }` to support per-name disambiguation
-  - All other categories: empty array — no entity disambiguation required
+  - `person`, `functional-area`: ranked list of existing same-category entities (persons, functional areas) for the company; ordered by fuzzy similarity score against `inferred_value` descending
+  - `relationship`: **polymorphic shape** — `candidates` is an object (not an array) with two keys: `"candidates": { "subordinate": [ { "entity_id", "value", "similarity_score" } ], "manager": [ { "entity_id", "value", "similarity_score" } ] }`. Each key contains a ranked list of existing **persons** for the company, scored against the respective name field. Frontend must handle this type difference explicitly (union type or runtime check on `category`).
+  - All other categories (`action-item`, `technology`, `process`, `product`, `cgkra-*`, `swot-*`, `other`): empty array — no entity disambiguation required
 
 **`source_excerpt` computation:**
 
@@ -1053,7 +1064,7 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
 
 - `**person**`: parse `corrected_value` (split on first comma → name + title; no comma → full value is name, title null); create new `persons` row from parsed values; status → `corrected`
 - `**functional-area**`: create new `functional_areas` row with `name = corrected_value`; status → `corrected`
-- `**action-item**`: create new `action_items` row with `description = corrected_value`; status → `corrected`; `inferred_fact_id` set on the new row
+- `**action-item**`: create new `action_items` row with `description = corrected_value`; status → `corrected`; `inferred_fact_id` set on the new row; same dedup rule as accept — if an open action item with the same description (case-insensitive) already exists for this company, reuse the existing row instead of creating a duplicate
 - `**relationship**`: parse `corrected_value` as `<subordinate> > <manager>` (same syntax as the `rel:` prefix tag); run the same name-resolution algorithm as `accept` (exact match → stub creation → fuzzy tiebreak); insert `relationships` row and update `persons.reports_to_person_id`; status → `corrected`; returns 422 `invalid_corrected_value` if the `>` separator is absent
 - **All other categories** (`technology`, `process`, `cgkra-*`, `swot-*`, `other`): store `corrected_value` on the InferredFact; status → `corrected`; no entity creation — the corrected text is the terminal artifact for these fact types
 
@@ -1074,7 +1085,7 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
 
 **GET `/companies/{id}/people/{person_id}`**
 
-- Output: `{ "person_id", "name", "title", "primary_area_id", "primary_area_name", "reports_to_person_id", "reports_to_name", "action_items": [ { "item_id", "description", "status", "notes", "created_at" } ], "inferred_facts": [ { "fact_id", "category", "value", "source_id" } ] }` — `inferred_facts` contains accepted and corrected facts linked to this person via `functional_area_id` or directly associated; `action_items` contains all items where `person_id` matches this person
+- Output: `{ "person_id", "name", "title", "primary_area_id", "primary_area_name", "reports_to_person_id", "reports_to_name", "action_items": [ { "item_id", "description", "status", "notes", "created_at" } ], "inferred_facts": [ { "fact_id", "category", "value", "source_id" } ] }` — `inferred_facts` contains accepted and corrected facts linked to this person's primary functional area via `functional_area_id`; `action_items` contains all items where `person_id` matches this person
 
 **GET `/companies/{id}/orgchart`**
 
@@ -1089,8 +1100,8 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
     ]
   }
   ```
-- `roots`: array of people with no known manager — may be zero, one, or many; each node recurses into `reports`
-- `unplaced`: people associated with the company who have no accepted `relationship` InferredFact in either direction (neither a manager nor a subordinate is known); displayed separately in the UI, not silently dropped
+- `roots`: array of people who appear as `manager_person_id` in at least one `relationships` row but never as `subordinate_person_id` — i.e., known to manage others but not known to report to anyone; may be zero, one, or many; each node recurses into `reports`
+- `unplaced`: people associated with the company who do not appear in any `relationships` row in either column (neither a manager nor a subordinate is known); displayed separately in the UI, not silently dropped; mutually exclusive with `roots` — a person is either placed in the tree or listed here, never both
 
 ---
 
@@ -1101,8 +1112,8 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
 | ------ | --------------------------------- | -------------------------------------------------------- |
 | GET    | `/companies/{id}/areas`           | List functional areas for a company                      |
 | POST   | `/companies/{id}/areas`           | Manually create a functional area                        |
-| GET    | `/companies/{id}/areas/{area_id}` | Area detail: people, CGKRA, action items, facts          |
-| PUT    | `/companies/{id}/areas/{area_id}` | Rename or update a functional area                       |
+| GET    | `/companies/{id}/areas/{area_id}` | Area detail: people, CGKRA, action items, facts, notes   |
+| PUT    | `/companies/{id}/areas/{area_id}` | Update a functional area (name, notes)                   |
 | DELETE | `/companies/{id}/areas/{area_id}` | Delete functional area (does not delete linked entities) |
 
 
@@ -1201,6 +1212,7 @@ Each area is computed from a different source of truth. The mapping is:
 | `org`        | Row count in `persons` table for the company                                                                                     | Number of known people                 | Configurable; default sparse < 3, populated ≥ 3                  |
 | `tech_stack` | Accepted `inferred_facts` with `category = 'technology'`                                                                         | Number of distinct technology facts    | Configurable; default sparse < 3, populated ≥ 3                  |
 | `processes`  | Accepted `inferred_facts` with `category = 'process'`                                                                            | Number of distinct process facts       | Configurable; default sparse < 2, populated ≥ 2                  |
+| `products`   | Accepted `inferred_facts` with `category = 'product'`                                                                            | Number of distinct product facts       | Configurable; default sparse < 2, populated ≥ 2                  |
 | `cgkra`      | Count of distinct CGKRA sub-categories (`cgkra-cs`, `cgkra-gw`, `cgkra-kp`, `cgkra-rm`, `cgkra-aop`) that have ≥ 1 accepted fact | Number of sub-categories covered (0–5) | Sparse if < 3 sub-categories covered; populated if all 5 covered |
 
 
@@ -1215,6 +1227,7 @@ Note: `cgkra` counts sub-categories covered, not total facts — 20 `cgkra-kp` f
     "org":        { "status": "populated" | "sparse" | "empty", "fact_count": int },
     "tech_stack": { "status": "populated" | "sparse" | "empty", "fact_count": int },
     "processes":  { "status": "populated" | "sparse" | "empty", "fact_count": int },
+    "products":   { "status": "populated" | "sparse" | "empty", "fact_count": int },
     "cgkra":      { "status": "populated" | "sparse" | "empty", "fact_count": int }
   }
 }
@@ -1320,7 +1333,9 @@ Indexes: `lower(name)` unique — exact case-insensitive duplicate check; blocks
 | id         | uuid        | no   | gen_random_uuid() | PK                                   |
 | company_id | uuid        | no   |                   | FK → companies(id) ON DELETE CASCADE |
 | name       | text        | no   |                   |                                      |
+| notes      | text        | yes  |                   | free-text investigator annotations   |
 | created_at | timestamptz | no   | now()             |                                      |
+| updated_at | timestamptz | no   | now()             |                                      |
 
 
 Constraints: `UNIQUE(company_id, name)`
@@ -1382,7 +1397,7 @@ Indexes: `(company_id)`, `(status)`, `(received_at DESC)`, GIN `(search_vector)`
 | source_id               | uuid        | no   |                   | FK → sources(id) ON DELETE CASCADE                                                                                                                                                                            |
 | company_id              | uuid        | no   |                   | FK → companies(id) ON DELETE CASCADE; denormalized for query efficiency                                                                                                                                       |
 | functional_area_id      | uuid        | yes  |                   | FK → functional_areas(id) ON DELETE SET NULL                                                                                                                                                                  |
-| category                | text        | no   |                   | CHECK IN ('functional-area', 'person', 'relationship', 'technology', 'process', 'cgkra-cs', 'cgkra-gw', 'cgkra-kp', 'cgkra-rm', 'cgkra-aop', 'swot-s', 'swot-w', 'swot-o', 'swot-th', 'action-item', 'other') |
+| category                | text        | no   |                   | CHECK IN ('functional-area', 'person', 'relationship', 'technology', 'process', 'product', 'cgkra-cs', 'cgkra-gw', 'cgkra-kp', 'cgkra-rm', 'cgkra-aop', 'swot-s', 'swot-w', 'swot-o', 'swot-th', 'action-item', 'other') |
 | inferred_value          | text        | no   |                   | raw value as returned by LLM; never overwritten                                                                                                                                                               |
 | source_line             | text        | yes  |                   | the originating tagged line from the parsed source (e.g. `"p: Jane Smith, VP Engineering"`); populated at `save_facts` time by matching each LLM fact back to its input ParsedLine; null if no match is found |
 | corrected_value         | text        | yes  |                   | investigator override; populated when status = 'corrected'                                                                                                                                                    |
@@ -1408,6 +1423,7 @@ Category-specific behaviour by review action (see §10.4 for full specification)
 | `functional-area` | Create `functional_areas` row                                        | Same as accept using corrected_value                        | Link to existing area; no name update        |
 | `relationship`    | Resolve names → person IDs; create stubs; insert `relationships` row | Re-parse `subordinate > manager`; same resolution           | 422                                          |
 | `action-item`     | Promote to `action_items` table                                      | Same as accept using corrected_value                        | 422                                          |
+| `product`         | Mark `accepted` in place                                             | Store corrected_value; mark `corrected`; no entity creation | 422                                          |
 | All others        | Mark `accepted` in place                                             | Store corrected_value; mark `corrected`; no entity creation | 422                                          |
 
 
@@ -1437,8 +1453,8 @@ Indexes: `(company_id)`, `(subordinate_person_id)`, `(manager_person_id)`
 
 Org chart derivation:
 
-- `roots` — persons where no row in `relationships` has `subordinate_person_id = person.id`
-- `unplaced` — persons where no row in `relationships` references `person.id` in either column
+- `roots` — persons who appear as `manager_person_id` in at least one row but never as `subordinate_person_id` (known to manage others, not known to report to anyone)
+- `unplaced` — persons where no row in `relationships` references `person.id` in either column (not placed in the tree at all); mutually exclusive with `roots`
 
 ---
 
@@ -1541,6 +1557,7 @@ No indexes required — the table always has exactly one row and is always acces
 | Coverage — org        | Row count in `persons` for the given `company_id`                                                                                   |
 | Coverage — tech_stack | Accepted `inferred_facts` with `category = 'technology'` for the given `company_id`                                                 |
 | Coverage — processes  | Accepted `inferred_facts` with `category = 'process'` for the given `company_id`                                                    |
+| Coverage — products   | Accepted `inferred_facts` with `category = 'product'` for the given `company_id`                                                    |
 | Coverage — cgkra      | Count of distinct CGKRA sub-categories with ≥ 1 accepted fact for the given `company_id` (see §10.10)                               |
 | CGKRA (company-wide)  | Accepted `inferred_facts` with `category` IN ('cgkra-cs', 'cgkra-gw', 'cgkra-kp', 'cgkra-rm', 'cgkra-aop') for a given `company_id` |
 | CGKRA (per area)      | Same as above filtered by `functional_area_id`                                                                                      |
@@ -1876,7 +1893,7 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 
 **Detailed decomposition**: see [`PHASE2.md`](PHASE2.md) for the step-by-step checklist of 8 sequential units of work.
 
-**Goal**: the investigator can upload a file, the system extracts inferred facts via LLM, and the investigator can accept simple facts (person, functional-area, technology, process, CGKRA, SWOT, action-item, other).
+**Goal**: the investigator can upload a file, the system extracts inferred facts via LLM, and the investigator can accept simple facts (person, functional-area, technology, process, product, CGKRA, SWOT, action-item, other).
 
 **Backend:**
 - PrefixParserService (§9.6): full implementation with all canonical keys; unit tests covering every alias and edge case
@@ -1893,7 +1910,7 @@ Each phase produces a deployable, testable system. At the end of each phase, the
 - File upload component on the company profile page
 - Source list on the company profile (UC 18) — status, error display, retry button
 - Pending review queue component (UC 5) — list pending facts, accept button, dismiss button
-- Company profile page now shows accepted people, functional areas, technologies, processes
+- Company profile page now shows accepted people, functional areas, technologies, processes, products
 
 **Tests:**
 - PrefixParserService: exhaustive unit tests for all canonical keys, aliases, routing fields, metadata extraction, malformed rel: lines, unrecognized prefixes

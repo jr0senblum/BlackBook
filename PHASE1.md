@@ -28,7 +28,7 @@ Reference: REQUIREMENTS.md §10 (API), §11 (Data Model), §16 (Agent Instructio
 - [x] Implement `CredentialRepository` (`backend/app/repositories/credential_repository.py`)
   - `get_credential()`, `create_credential()`, `update_password_hash()`
 - [x] Implement `SessionRepository` (`backend/app/repositories/session_repository.py`)
-  - `create_session()`, `get_by_token()`, `delete_by_token()`, `delete_expired()`
+  - `create_session()`, `get_by_token()`, `update_last_active()` (touch `last_active_at` to now for rolling timeout per §7.3), `delete_by_token()`, `delete_expired()`
 - [x] Implement auth Pydantic schemas (`backend/app/schemas/auth.py`)
   - Request/response models for password set, login, logout, password change
 - [x] Implement `AuthService` (`backend/app/services/auth_service.py`)
@@ -38,18 +38,18 @@ Reference: REQUIREMENTS.md §10 (API), §11 (Data Model), §16 (Agent Instructio
   - `change_password()` — validate current password, update hash
   - `validate_session()` — check token exists and is not expired per §7.3 timeout
 - [x] Implement domain exceptions for auth (in `backend/app/exceptions.py` or auth-specific)
-  - `CredentialsAlreadySetError` (409), `InvalidCredentialsError` (401), `SessionExpiredError` (401)
+  - `CredentialsAlreadySetError` (409), `InvalidCredentialsError` (401), `InvalidCurrentPasswordError` (401, code `invalid_current_password` — for password change), `SessionExpiredError` (401)
 - [x] Implement route handlers (`backend/app/api/v1/auth.py`)
   - `POST /auth/password/set`
-  - `POST /auth/login` — sets `session` cookie (HttpOnly)
+  - `POST /auth/login` — sets `session` cookie (HttpOnly, Secure, SameSite=Strict per §7.3)
   - `POST /auth/logout`
   - `POST /auth/password/change`
 - [x] Implement session middleware in `backend/app/dependencies.py`
-  - `get_current_session()` dependency that reads the `session` cookie, validates via AuthService, and raises 401 if invalid/expired
+  - `get_current_session()` dependency that reads the `session` cookie, validates via AuthService (checks expiry, updates `last_active_at` on success), and raises 401 if invalid/expired
 - [x] Implement `config.py` (`backend/app/config.py`) — Pydantic Settings class covering all required configuration:
   - `DATABASE_URL` — PostgreSQL connection string
   - `BLACKBOOK_DATA_DIR` — root path for file storage (§8)
-  - `SESSION_TIMEOUT_MINUTES` — inactivity timeout (default 5, per §7.3)
+  - `SESSION_TIMEOUT_MINUTES` — inactivity timeout (default 30, per §7.3)
   - `LLM_API_KEY` and `LLM_PROVIDER` — API key and provider selection (Anthropic or OpenAI)
   - Settings loaded from environment variables and/or a local `.env` file; never hardcoded
 - [x] Implement the error envelope and exception handler
@@ -70,14 +70,14 @@ Reference: REQUIREMENTS.md §10 (API), §11 (Data Model), §16 (Agent Instructio
 
 - [x] Implement `CompanyRepository` (`backend/app/repositories/company_repository.py`)
   - `create()`, `get_by_id()`, `get_by_name_iexact()`, `list_all()` (with pagination: limit/offset), `update()`, `delete()`
-  - `list_all()` returns `pending_count` (count of inferred_facts with status='pending' per company)
+  - `list_all()` returns `pending_count` (count of inferred_facts with status='pending' per company); ordered by `name` ascending per §10.2
 - [x] Implement company Pydantic schemas (`backend/app/schemas/company.py`)
-  - `CompanyCreate`, `CompanyUpdate`, `CompanyResponse` (with `pending_count`), `CompanyListResponse` (paginated)
+  - `CompanyCreate`, `CompanyUpdate`, `CompanyDetailResponse` (flat: id, name, mission, vision, llm_context_mode, created_at, updated_at, pending_count — NOT the full §10.2 composition shape; people, CGKRA, coverage, and functional areas are added in later phases), `CompanyListResponse` (paginated)
 - [x] Implement `CompanyService` (`backend/app/services/company_service.py`)
   - `create_company()` — exact case-insensitive duplicate name check, block with 409 `name_conflict`
   - `get_company()` — 404 `company_not_found` if missing
   - `list_companies()` — paginated
-  - `update_company()` — 404 if missing
+  - `update_company()` — 404 if missing; 409 `name_conflict` if rename collides with an existing company name (case-insensitive)
   - `delete_company()` — 404 if missing; CASCADE handles related data
 - [x] Implement domain exceptions for companies (in `backend/app/exceptions.py`)
   - `CompanyNotFoundError` (404), `CompanyNameConflictError` (409)
