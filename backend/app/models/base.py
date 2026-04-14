@@ -73,7 +73,9 @@ class FunctionalArea(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
     company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
     name = Column(Text, nullable=False)
+    notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
         UniqueConstraint("company_id", "name", name="uq_functional_areas_company_name"),
@@ -210,7 +212,7 @@ class InferredFact(Base):
         CheckConstraint(
             "category IN ("
             "'functional-area', 'person', 'relationship', "
-            "'technology', 'process', "
+            "'technology', 'process', 'product', "
             "'cgkra-cs', 'cgkra-gw', 'cgkra-kp', 'cgkra-rm', 'cgkra-aop', "
             "'swot-s', 'swot-w', 'swot-o', 'swot-th', "
             "'action-item', 'other'"

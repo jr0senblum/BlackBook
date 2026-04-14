@@ -49,6 +49,7 @@ The keys indicate the type of information:
 - `w` = SWOT weakness
 - `o` = SWOT opportunity
 - `th` = SWOT threat
+- `prod` = product (company's product or service offering)
 - `a` = action item / to-do
 - `n` = plain note (extract any identifiable facts of any category)
 
@@ -57,7 +58,7 @@ For each line, extract one or more structured facts. Return ONLY a JSON array.
 Rules:
 1. Each element MUST have "category" and "value" fields. The "value" field is REQUIRED \
 for ALL categories, including relationships.
-2. Valid categories: functional-area, person, relationship, technology, process, \
+2. Valid categories: functional-area, person, relationship, technology, process, product, \
 cgkra-cs, cgkra-gw, cgkra-kp, cgkra-rm, cgkra-aop, swot-s, swot-w, swot-o, \
 swot-th, action-item, other.
 3. For relationship facts, you MUST include ALL THREE fields: "value" (a human-readable \
@@ -69,7 +70,8 @@ Only use "other" for content that cannot be classified into any specific categor
 5. For CGKRA and SWOT lines, preserve the category from the tag exactly — do not \
 reclassify based on content.
 6. For comma-separated values (e.g., "tech: Kubernetes, Terraform"), produce one fact per item.
-7. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
+7. For `prod:` lines, extract each product or service offering as a separate "product" fact.
+8. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
 """
 
 RAW_SYSTEM_PROMPT = """\
@@ -83,7 +85,7 @@ Return ONLY a JSON array of objects. Each object represents one extracted fact.
 Rules:
 1. Each element MUST have "category" and "value" fields. The "value" field is REQUIRED \
 for ALL categories, including relationships.
-2. Valid categories: functional-area, person, relationship, technology, process, \
+2. Valid categories: functional-area, person, relationship, technology, process, product, \
 cgkra-cs, cgkra-gw, cgkra-kp, cgkra-rm, cgkra-aop, swot-s, swot-w, swot-o, \
 swot-th, action-item, other.
 3. For relationship facts, you MUST include ALL THREE fields: "value" (a human-readable \
@@ -95,16 +97,17 @@ to Bob Jones", "subordinate": "Jane Smith", "manager": "Bob Jones"}.
 6. Extract functional areas / team names when mentioned (e.g., "engineering team", \
 "product", "sales", "marketing"). If someone "runs the engineering team", both a \
 person fact AND a functional-area fact ("Engineering") should be extracted.
-7. For CGKRA facts (current state, going well, key problems, roadmap, annual operating \
+7. Extract product or service offerings as "product" category facts when mentioned.
+8. For CGKRA facts (current state, going well, key problems, roadmap, annual operating \
 plan) and SWOT facts (strengths, weaknesses, opportunities, threats), use the \
 appropriate category.
-8. Decompose compound statements into individual facts. For example, "They use \
+9. Decompose compound statements into individual facts. For example, "They use \
 Kubernetes and Terraform" should produce two technology facts.
-9. Only use "other" for content that cannot be classified into any specific category.
-10. If company context is provided below, use it to disambiguate people, teams, and \
+10. Only use "other" for content that cannot be classified into any specific category.
+11. If company context is provided below, use it to disambiguate people, teams, and \
 terminology. Do NOT extract facts that duplicate information already present in the \
 company context.
-11. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
+12. Return ONLY the JSON array. No prose, no explanation, no markdown code fences.
 """
 
 

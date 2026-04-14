@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://localhost:5432/blackbook"
 
     # Session
-    session_timeout_minutes: int = 5
+    session_timeout_minutes: int = 30
 
     # LLM
     llm_provider: str = ""  # "anthropic" or "openai"

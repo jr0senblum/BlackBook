@@ -5,6 +5,11 @@ Responsibilities:
   - list_pending: return paginated facts (filterable by status and category)
   - accept_fact: transition a pending fact to accepted, creating entities as needed
   - dismiss_fact: transition a pending fact to dismissed
+
+Phase 3 refactor: delegates entity creation to PersonService and
+FunctionalAreaService per §9.2. ActionItemRepository and
+RelationshipRepository remain as direct dependencies (partial §9.2
+compliance — ActionItemService extraction deferred).
 """
 
 from __future__ import annotations
@@ -20,15 +25,15 @@ from app.exceptions import (
     FactNotPendingError,
 )
 from app.repositories.action_item_repository import ActionItemRepository
-from app.repositories.functional_area_repository import FunctionalAreaRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
-from app.repositories.person_repository import PersonRepository
 from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
 from app.services.prefix_parser_service import ParsedLine
 
 if TYPE_CHECKING:
     from app.schemas.inferred_fact import LLMInferredFact
+    from app.services.functional_area_service import FunctionalAreaService
+    from app.services.person_service import PersonService
 
 logger = logging.getLogger(__name__)
 
@@ -39,15 +44,15 @@ class ReviewService:
         *,
         inferred_fact_repo: InferredFactRepository,
         source_repo: SourceRepository,
-        person_repo: PersonRepository,
-        functional_area_repo: FunctionalAreaRepository,
+        person_service: PersonService,
+        functional_area_service: FunctionalAreaService,
         action_item_repo: ActionItemRepository,
         relationship_repo: RelationshipRepository,
     ):
         self._inferred_fact_repo = inferred_fact_repo
         self._source_repo = source_repo
-        self._person_repo = person_repo
-        self._functional_area_repo = functional_area_repo
+        self._person_service = person_service
+        self._functional_area_service = functional_area_service
         self._action_item_repo = action_item_repo
         self._relationship_repo = relationship_repo
 
@@ -218,7 +223,7 @@ class ReviewService:
                 "status": fact.status,
                 "source_id": fact.source_id,
                 "source_excerpt": source_excerpt,
-                "candidates": [],  # Phase 2: always empty; Phase 3 adds disambiguation
+                "candidates": [],  # Phase 2: always empty; Phase 3 Unit 4 adds disambiguation
             })
 
         return items, total
@@ -258,7 +263,7 @@ class ReviewService:
             entity_id = await self._accept_action_item(cid, fact)
         elif fact.category == "relationship":
             entity_id = await self._accept_relationship(cid, fact)
-        # All other categories (technology, process, cgkra-*, swot-*, other):
+        # All other categories (technology, process, product, cgkra-*, swot-*, other):
         # no entity creation — just mark accepted.
 
         # Mark the fact as accepted
@@ -298,53 +303,24 @@ class ReviewService:
     # ── Private accept handlers ─────────────────────────────────
 
     async def _accept_person(self, company_id: UUID, fact: Any) -> str:
-        """Parse inferred_value as "name, title" and create a person.
+        """Delegate to PersonService.get_or_create_person_from_value().
 
-        If a person with the same name already exists for this company
-        (case-insensitive match), reuses the existing row.  If the existing
-        person has no title and the fact provides one, the title is updated.
+        Preserves Phase 2 dedup+backfill behavior via the domain service.
         """
-        value = fact.inferred_value
-        if "," in value:
-            # Split on first comma: left = name, right = title
-            name, title = value.split(",", 1)
-            name = name.strip()
-            title = title.strip()
-        else:
-            name = value.strip()
-            title = None
-
-        # Check for existing person (dedup on name within company)
-        matches = await self._person_repo.get_by_name_iexact(company_id, name)
-        if matches:
-            existing = matches[0]
-            # Back-fill title if the existing person has none
-            if title and not existing.title:
-                await self._person_repo.update_title(existing.id, title)
-            return str(existing.id)
-
-        person = await self._person_repo.create(
-            company_id=company_id,
-            name=name,
-            title=title,
+        person = await self._person_service.get_or_create_person_from_value(
+            company_id, fact.inferred_value
         )
         return str(person.id)
 
     async def _accept_functional_area(
         self, company_id: UUID, fact: Any
     ) -> str:
-        """Create a functional area, or reuse existing if name matches."""
-        name = fact.inferred_value.strip()
+        """Delegate to FunctionalAreaService.create_area_safe().
 
-        # Check for existing (handles UNIQUE constraint on (company_id, name))
-        existing = await self._functional_area_repo.get_by_name_iexact(
-            company_id, name
-        )
-        if existing is not None:
-            return str(existing.id)
-
-        area = await self._functional_area_repo.create(
-            company_id=company_id, name=name
+        Preserves Phase 2 dedup behavior via the domain service.
+        """
+        area = await self._functional_area_service.create_area_safe(
+            company_id, fact.inferred_value.strip()
         )
         return str(area.id)
 
@@ -355,6 +331,9 @@ class ReviewService:
 
         If an open action item with the same description already exists for
         this company (case-insensitive match), reuses the existing row.
+
+        Note: ActionItemRepository used directly — no ActionItemService yet
+        (partial §9.2 compliance).
         """
         description = fact.inferred_value.strip()
 
@@ -378,8 +357,13 @@ class ReviewService:
     ) -> str:
         """Parse "subordinate > manager" from inferred_value, resolve names, create relationship.
 
+        Delegates name resolution to PersonService.resolve_person().
+
         If the (subordinate, manager) pair already exists, reuses the existing
         relationship row (same dedup pattern as _accept_functional_area).
+
+        Note: RelationshipRepository used directly — no RelationshipService
+        (partial §9.2 compliance).
         """
         value = fact.inferred_value
 
@@ -398,17 +382,15 @@ class ReviewService:
             sub_name = parts[0].strip()
             mgr_name = parts[1].strip()
 
-        # Resolve subordinate
-        sub_id = await self._resolve_person(company_id, sub_name)
-
-        # Resolve manager
-        mgr_id = await self._resolve_person(company_id, mgr_name)
+        # Resolve subordinate and manager via PersonService
+        sub_id = await self._person_service.resolve_person(company_id, sub_name)
+        mgr_id = await self._person_service.resolve_person(company_id, mgr_name)
 
         # Check for existing relationship (handles UNIQUE constraint uq_relationships_sub_mgr)
         existing = await self._relationship_repo.get_by_sub_mgr(sub_id, mgr_id)
         if existing is not None:
             # Still update reports_to in case it was cleared
-            await self._person_repo.update_reports_to(sub_id, mgr_id)
+            await self._person_service._person_repo.update_reports_to(sub_id, mgr_id)
             return str(existing.id)
 
         # Create relationship row
@@ -420,26 +402,6 @@ class ReviewService:
         )
 
         # Set reports_to_person_id on the subordinate
-        await self._person_repo.update_reports_to(sub_id, mgr_id)
+        await self._person_service._person_repo.update_reports_to(sub_id, mgr_id)
 
         return str(relationship.id)
-
-    async def _resolve_person(
-        self, company_id: UUID, name: str
-    ) -> UUID:
-        """Resolve a person name to an ID.
-
-        1. Case-insensitive exact match — exactly one match → use that ID.
-        2. Multiple matches → use first (Phase 3 adds fuzzy scoring).
-        3. No match → create stub person (name only, title=null).
-        """
-        matches = await self._person_repo.get_by_name_iexact(company_id, name)
-        if matches:
-            return matches[0].id
-
-        # No match — create stub person
-        person = await self._person_repo.create(
-            company_id=company_id,
-            name=name,
-        )
-        return person.id

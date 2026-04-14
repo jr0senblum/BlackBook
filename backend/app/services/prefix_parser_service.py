@@ -89,6 +89,9 @@ CANONICAL_MAP: dict[str, str] = {
     "opportunity": "o",
     "threat": "th",
     "risk": "th",
+    # Products
+    "prod": "prod",
+    "product": "prod",
     # Action items
     "action": "a",
     "todo": "a",
@@ -109,6 +112,7 @@ CANONICAL_MAP: dict[str, str] = {
     "o": "o",
     "th": "th",
     "a": "a",
+    "prod": "prod",
     "n": "n",
 }
 

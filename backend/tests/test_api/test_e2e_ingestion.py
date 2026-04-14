@@ -20,7 +20,9 @@ from app.repositories.company_repository import CompanyRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.source_repository import SourceRepository
 from app.schemas.inferred_fact import LLMInferredFact
+from app.services.functional_area_service import FunctionalAreaService
 from app.services.ingestion_service import IngestionService
+from app.services.person_service import PersonService
 from app.services.review_service import ReviewService
 from app.repositories.person_repository import PersonRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
@@ -82,11 +84,22 @@ def _build_ingestion_service(
     mock_inference: AsyncMock,
 ) -> IngestionService:
     """Build an IngestionService with a mocked InferenceService."""
+    person_svc = PersonService(
+        person_repo=PersonRepository(db),
+        functional_area_repo=FunctionalAreaRepository(db),
+        action_item_repo=ActionItemRepository(db),
+        inferred_fact_repo=InferredFactRepository(db),
+    )
+    area_svc = FunctionalAreaService(
+        area_repo=FunctionalAreaRepository(db),
+        person_repo=PersonRepository(db),
+        action_item_repo=ActionItemRepository(db),
+    )
     review_service = ReviewService(
         inferred_fact_repo=InferredFactRepository(db),
         source_repo=SourceRepository(db),
-        person_repo=PersonRepository(db),
-        functional_area_repo=FunctionalAreaRepository(db),
+        person_service=person_svc,
+        functional_area_service=area_svc,
         action_item_repo=ActionItemRepository(db),
         relationship_repo=RelationshipRepository(db),
     )

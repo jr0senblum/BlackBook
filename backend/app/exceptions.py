@@ -128,3 +128,33 @@ class FactCompanyMismatchError(DomainError):
     code = "fact_company_mismatch"
     status_code = 404
     message = "Inferred fact does not belong to this company"
+
+
+# --- Person exceptions ---
+
+
+class PersonNotFoundError(DomainError):
+    code = "person_not_found"
+    status_code = 404
+    message = "Person not found"
+
+
+class PersonCompanyMismatchError(DomainError):
+    code = "person_company_mismatch"
+    status_code = 404
+    message = "Person does not belong to this company"
+
+
+# --- Functional area exceptions ---
+
+
+class AreaNotFoundError(DomainError):
+    code = "area_not_found"
+    status_code = 404
+    message = "Functional area not found"
+
+
+class AreaNameConflictError(DomainError):
+    code = "area_name_conflict"
+    status_code = 409
+    message = "A functional area with this name already exists"

@@ -18,8 +18,10 @@ from app.repositories.session_repository import SessionRepository
 from app.repositories.source_repository import SourceRepository
 from app.services.auth_service import AuthService
 from app.services.company_service import CompanyService
+from app.services.functional_area_service import FunctionalAreaService
 from app.services.inference_service import InferenceService
 from app.services.ingestion_service import IngestionService
+from app.services.person_service import PersonService
 from app.services.review_service import ReviewService
 from app.workers.ingestion_worker import IngestionQueue, ingestion_queue
 
@@ -86,6 +88,49 @@ def get_ingestion_queue() -> IngestionQueue:
     return ingestion_queue
 
 
+# ---------------------------------------------------------------------------
+# Domain service builders
+# ---------------------------------------------------------------------------
+
+
+def _build_person_service(db: AsyncSession) -> PersonService:
+    """Build a PersonService from a session."""
+    return PersonService(
+        person_repo=PersonRepository(db),
+        functional_area_repo=FunctionalAreaRepository(db),
+        action_item_repo=ActionItemRepository(db),
+        inferred_fact_repo=InferredFactRepository(db),
+    )
+
+
+def _build_functional_area_service(db: AsyncSession) -> FunctionalAreaService:
+    """Build a FunctionalAreaService from a session."""
+    return FunctionalAreaService(
+        area_repo=FunctionalAreaRepository(db),
+        person_repo=PersonRepository(db),
+        action_item_repo=ActionItemRepository(db),
+    )
+
+
+async def get_person_service(
+    db: AsyncSession = Depends(get_db),
+) -> PersonService:
+    """Provide a PersonService instance for route DI."""
+    return _build_person_service(db)
+
+
+async def get_functional_area_service(
+    db: AsyncSession = Depends(get_db),
+) -> FunctionalAreaService:
+    """Provide a FunctionalAreaService instance for route DI."""
+    return _build_functional_area_service(db)
+
+
+# ---------------------------------------------------------------------------
+# ReviewService + IngestionService builders
+# ---------------------------------------------------------------------------
+
+
 async def get_review_service(
     db: AsyncSession = Depends(get_db),
 ) -> ReviewService:
@@ -98,8 +143,8 @@ def _build_review_service(db: AsyncSession) -> ReviewService:
     return ReviewService(
         inferred_fact_repo=InferredFactRepository(db),
         source_repo=SourceRepository(db),
-        person_repo=PersonRepository(db),
-        functional_area_repo=FunctionalAreaRepository(db),
+        person_service=_build_person_service(db),
+        functional_area_service=_build_functional_area_service(db),
         action_item_repo=ActionItemRepository(db),
         relationship_repo=RelationshipRepository(db),
     )

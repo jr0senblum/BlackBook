@@ -25,6 +25,8 @@ from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
 from app.exceptions import FactCompanyMismatchError, FactNotFoundError, FactNotPendingError
 from app.schemas.inferred_fact import LLMInferredFact
+from app.services.functional_area_service import FunctionalAreaService
+from app.services.person_service import PersonService
 from app.services.prefix_parser_service import ParsedLine
 from app.services.review_service import ReviewService
 
@@ -36,12 +38,23 @@ from app.services.review_service import ReviewService
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def review_service(db_session: AsyncSession) -> ReviewService:
-    """Provide a ReviewService wired to test repos."""
+    """Provide a ReviewService wired to test repos via domain services."""
+    person_svc = PersonService(
+        person_repo=PersonRepository(db_session),
+        functional_area_repo=FunctionalAreaRepository(db_session),
+        action_item_repo=ActionItemRepository(db_session),
+        inferred_fact_repo=InferredFactRepository(db_session),
+    )
+    area_svc = FunctionalAreaService(
+        area_repo=FunctionalAreaRepository(db_session),
+        person_repo=PersonRepository(db_session),
+        action_item_repo=ActionItemRepository(db_session),
+    )
     return ReviewService(
         inferred_fact_repo=InferredFactRepository(db_session),
         source_repo=SourceRepository(db_session),
-        person_repo=PersonRepository(db_session),
-        functional_area_repo=FunctionalAreaRepository(db_session),
+        person_service=person_svc,
+        functional_area_service=area_svc,
         action_item_repo=ActionItemRepository(db_session),
         relationship_repo=RelationshipRepository(db_session),
     )
@@ -374,8 +387,8 @@ async def test_list_pending_source_deleted_fallback(
     svc = ReviewService(
         inferred_fact_repo=fact_repo,
         source_repo=mock_source_repo,
-        person_repo=AsyncMock(),
-        functional_area_repo=AsyncMock(),
+        person_service=AsyncMock(),
+        functional_area_service=AsyncMock(),
         action_item_repo=AsyncMock(),
         relationship_repo=AsyncMock(),
     )
@@ -413,8 +426,8 @@ async def test_list_pending_source_null_raw_content_fallback(
     svc = ReviewService(
         inferred_fact_repo=fact_repo,
         source_repo=mock_source_repo,
-        person_repo=AsyncMock(),
-        functional_area_repo=AsyncMock(),
+        person_service=AsyncMock(),
+        functional_area_service=AsyncMock(),
         action_item_repo=AsyncMock(),
         relationship_repo=AsyncMock(),
     )

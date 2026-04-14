@@ -11,6 +11,7 @@ VALID_CATEGORIES = frozenset({
     "relationship",
     "technology",
     "process",
+    "product",
     "cgkra-cs",
     "cgkra-gw",
     "cgkra-kp",
