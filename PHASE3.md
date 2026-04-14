@@ -37,16 +37,18 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - Add `'product'` to the `inferred_facts.category` CHECK constraint
   - Add `'prod'` to `CANONICAL_MAP` in `prefix_parser_service.py` and `'product'` to the valid category set in `inference_service.py` (code changes, not migration — but must be done alongside the migration)
   - Update ORM model in `models/base.py` to match
+  - Fix `session_timeout_minutes` default in `backend/app/config.py`: change `5` to `30` per REQUIREMENTS.md §10.1 / PHASE1.md fix
   - Verify migration runs cleanly on `blackbook` DB
 - [ ] Create `PersonService` in `backend/app/services/person_service.py` (new file):
   - Constructor: `person_repo: PersonRepository`, `functional_area_repo: FunctionalAreaRepository`, `action_item_repo: ActionItemRepository`, `inferred_fact_repo: InferredFactRepository`
   - `create_person(company_id: UUID, *, name: str, title: str | None = None, primary_area_id: UUID | None = None, reports_to_person_id: UUID | None = None) -> Person` — insert new person row
-  - `create_person_from_value(company_id: UUID, value: str) -> Person` — parse `value` by splitting on first comma (left = name, right = title); if no comma, full value is name, title is null; delegates to `create_person()`
+  - `create_person_from_value(company_id: UUID, value: str) -> Person` — parse `value` by splitting on first comma (left = name, right = title); if no comma, full value is name, title is null; delegates to `create_person()`. Used by `correct_fact` (always creates a new person — the investigator explicitly chose correct over merge).
+  - `get_or_create_person_from_value(company_id: UUID, value: str) -> Person` — same parse logic as `create_person_from_value`, but deduplicates: check `get_by_name_iexact(company_id, name)` first; if a match exists, reuse it (and back-fill title if the existing person has none and the fact provides one); if no match, create new. This preserves Phase 2's `_accept_person` dedup+backfill behavior. Used by `accept_fact`.
   - `resolve_person(company_id: UUID, name: str) -> UUID` — name resolution algorithm from §10.4: (1) case-insensitive exact match — if exactly one, use it; (2) multiple matches — use first (Phase 3 adds fuzzy scoring later via disambiguation, but resolution at accept time still uses first match); (3) no match — create stub person
   - `list_people(company_id: UUID) -> list[Person]` — delegates to `person_repo.list_by_company()`
   - `get_person(company_id: UUID, person_id: UUID) -> dict` — enriched with area name, reports_to name, action items, linked inferred facts
-  - `update_person(company_id: UUID, person_id: UUID, **fields) -> Person` — update specified fields
-  - `delete_person(company_id: UUID, person_id: UUID) -> None`
+  - `update_person(company_id: UUID, person_id: UUID, **fields) -> Person` — update specified fields. **Note**: depends on `PersonRepository.update()` which is added in Unit 5. Implement as a stub (`raise NotImplementedError`) in Unit 1; complete in Unit 5 when the repository method is available.
+  - `delete_person(company_id: UUID, person_id: UUID) -> None` — **Note**: depends on `PersonRepository.delete()` which is added in Unit 5. Implement as a stub in Unit 1; complete in Unit 5.
 - [ ] Create `FunctionalAreaService` in `backend/app/services/functional_area_service.py` (new file):
   - Constructor: `area_repo: FunctionalAreaRepository`, `person_repo: PersonRepository`, `action_item_repo: ActionItemRepository`
   - `create_area(company_id: UUID, name: str, *, notes: str | None = None) -> FunctionalArea` — insert new row; **does NOT deduplicate** (spec says "create new" for both accept and correct; the UNIQUE constraint on `(company_id, name)` will raise IntegrityError if a true duplicate is created — this is the correct behavior per spec; the investigator's tool for linking to an existing area is merge)
@@ -65,7 +67,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - Remove direct usage of `PersonRepository`, `FunctionalAreaRepository`, `ActionItemRepository`, `RelationshipRepository` from ReviewService constructor — these are now owned by the domain services
   - **Exception**: ReviewService still needs `RelationshipRepository` directly for relationship accept/correct (there is no dedicated RelationshipService in the spec). Keep it as a constructor dependency.
   - **Exception**: ReviewService still needs `ActionItemRepository` directly for action-item accept/correct (no ActionItemService in the spec yet — §9.2 mentions it but §17 Phase 3 doesn't define it as a separate unit). Keep it temporarily; extract to ActionItemService if/when the spec adds action-item CRUD endpoints.
-  - Refactor `_accept_person` → calls `person_service.create_person_from_value()`
+  - Refactor `_accept_person` → calls `person_service.get_or_create_person_from_value()` (preserves dedup+backfill)
   - Refactor `_accept_functional_area` → calls `functional_area_service.create_area_safe()`
   - Refactor `_resolve_person` → calls `person_service.resolve_person()`
   - Keep `_accept_action_item` and `_accept_relationship` using repos directly (no domain service exists for these yet)
@@ -77,6 +79,9 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - `test_create_person` — creates person with name and title
     - `test_create_person_from_value_with_comma` — "Jane Smith, VP" -> name="Jane Smith", title="VP"
     - `test_create_person_from_value_without_comma` — "Jane Smith" -> name="Jane Smith", title=None
+    - `test_get_or_create_person_dedup_existing` — existing person with same name (case-insensitive) -> reuses existing row
+    - `test_get_or_create_person_backfill_title` — existing person with no title, fact has title -> title back-filled
+    - `test_get_or_create_person_no_match_creates` — no match -> creates new person
     - `test_resolve_person_exact_match` — one match -> returns existing ID
     - `test_resolve_person_multiple_matches_uses_first` — multiple matches -> first
     - `test_resolve_person_no_match_creates_stub` — no match -> creates stub
@@ -85,11 +90,11 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - `test_create_area_safe_deduplicates` — existing name (case-insensitive) -> returns existing ID
     - `test_create_area_no_dedup` — `create_area()` does NOT deduplicate (will raise IntegrityError on exact duplicate)
   - Update existing `test_review_service.py` tests to verify delegation works (existing tests should still pass after refactor)
-- [ ] Run full test suite — all 372 existing tests must still pass after refactor
+- [ ] Run full test suite — all 444 existing tests must still pass after refactor
 
 **Why first**: §9.2 requires ReviewService to delegate to domain services. Phase 2 violated this for pragmatic reasons (domain services didn't exist yet). Phase 3 introduces PersonService and FunctionalAreaService — creating them first gives merge/correct (Unit 2) the right delegation targets from the start, rather than adding more debt and refactoring later.
 
-**Rationale**: §9.2 line 442: "on accept/correct, delegates entity creation to the appropriate domain service (PersonService, ActionItemService, etc.) — never calls another service's repository directly." This unit resolves Phase 2 architectural debt at the natural moment when the domain services are being created anyway.
+**Rationale**: §9.2 line 442: "on accept/correct, delegates entity creation to the appropriate domain service (PersonService, ActionItemService, etc.) — never calls another service's repository directly." This unit partially resolves Phase 2 architectural debt by extracting PersonService and FunctionalAreaService. Full §9.2 compliance (ActionItemService, RelationshipService) is deferred — these categories lack dedicated CRUD endpoints in Phase 3, making full extraction premature.
 
 ---
 
@@ -111,12 +116,12 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - `correct_fact(company_id: str, fact_id: str, corrected_value: str) -> str | None`
     - Validate fact exists, belongs to company, is pending
     - Branch on `category`:
-      - `person`: delegate to `person_service.create_person_from_value(company_id, corrected_value)`; update fact with `status="corrected"`, `corrected_value=corrected_value`; return person ID
-      - `functional-area`: delegate to `functional_area_service.create_area(company_id, corrected_value)` — **no deduplication** per §10.4 ("create new functional_areas row with name = corrected_value"); if the investigator wanted to link to an existing area, they should have used merge; update fact status; return area ID
-      - `action-item`: create new action item with `description=corrected_value` via `action_item_repo`; same dedup rule as accept — if an open action item with the same description (case-insensitive) already exists for this company, reuse the existing row; update fact status; return action item ID
+      - `person`: delegate to `person_service.create_person_from_value(company_id, corrected_value)` (always creates new — correct is not dedup'd); the new person is created with the parsed name and title from `corrected_value`; update fact with `status="corrected"`, `corrected_value=corrected_value`; return person ID. **Note**: correct does NOT mutate an existing person row — it creates a new person entity. The `corrected_value` on the fact records what the investigator intended.
+      - `functional-area`: delegate to `functional_area_service.create_area(company_id, corrected_value)` — **no deduplication** per §10.4 ("create new functional_areas row with name = corrected_value"); if the investigator wanted to link to an existing area, they should have used merge; **wrap in try/except for IntegrityError** — if the corrected name collides with an existing area's `(company_id, name)` UNIQUE constraint, catch `IntegrityError` and raise `AreaNameConflictError` (409) so the investigator knows to use merge instead; update fact status; return area ID
+      - `action-item`: create new action item with `description=corrected_value` via `action_item_repo`; same dedup rule as accept — if an open action item with the same description (case-insensitive) already exists for this company, reuse the existing row (do NOT update the existing row's description); if no match, create new row with `description=corrected_value`; update fact status to `corrected` with `corrected_value`; return action item ID
       - `relationship`: parse `corrected_value` as `<subordinate> > <manager>` — if no `>` separator, raise `InvalidCorrectedValueError`; delegate name resolution to `person_service.resolve_person()` for each name; create relationship row via `relationship_repo`; update `reports_to_person_id` on subordinate via `person_service`; update fact status; return relationship ID
       - All other categories: store `corrected_value` on the fact; update status to `corrected`; return None (no entity creation)
-  - `update_fact_value(company_id: str, fact_id: str, corrected_value: str) -> None` — UC 17 in-place editing of already-accepted/corrected InferredFacts; validates fact exists, belongs to company, status is `accepted` or `corrected`; sets `corrected_value` on the fact; does NOT change status (an accepted fact stays accepted; a corrected fact stays corrected); the original `inferred_value` is never overwritten per §6.3
+  - `update_fact_value(company_id: str, fact_id: str, corrected_value: str) -> None` — UC 17 in-place editing of already-accepted/corrected InferredFacts; validates fact exists, belongs to company, status is `accepted` or `corrected`; rejects `pending`, `dismissed`, and `merged` facts (merged facts belong to another entity — editing them would be incoherent); sets `corrected_value` on the fact; does NOT change status (an accepted fact stays accepted; a corrected fact stays corrected); the original `inferred_value` is never overwritten per §6.3
 - [ ] Write tests in `backend/tests/test_services/test_review_service.py`:
   - Merge tests:
     - `test_merge_person_success` — merge to existing person, verify status=merged, merged_into fields set
@@ -146,6 +151,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - `test_update_fact_value_corrected_fact` — overwrites corrected_value on corrected fact, status stays corrected
     - `test_update_fact_value_pending_fact_rejected` — pending fact -> error (must accept/correct first)
     - `test_update_fact_value_dismissed_fact_rejected` — dismissed fact -> error
+    - `test_update_fact_value_merged_fact_rejected` — merged fact -> error (merged facts belong to another entity)
     - `test_update_fact_value_not_found` — FactNotFoundError
     - `test_update_fact_value_wrong_company` — FactCompanyMismatchError
 
@@ -171,7 +177,9 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 - [ ] Add route handlers in `backend/app/api/v1/pending.py`:
   - `POST /{company_id}/pending/{fact_id}/merge` — parse `MergeRequest` body; call `review_service.merge_fact()`; return `MergeResponse`
   - `POST /{company_id}/pending/{fact_id}/correct` — parse `CorrectRequest` body; call `review_service.correct_fact()`; return `CorrectResponse`
-  - `PUT /{company_id}/pending/{fact_id}` — parse `UpdateFactValueRequest` body; call `review_service.update_fact_value()`; return `UpdateFactValueResponse`
+- [ ] Add route handler in `backend/app/api/v1/facts.py` (new file):
+  - `PUT /companies/{company_id}/facts/{fact_id}` — parse `UpdateFactValueRequest` body; call `review_service.update_fact_value()`; return `UpdateFactValueResponse`. **Note**: this is deliberately NOT under `/pending/` — UC 17 edits apply to accepted/corrected facts, which are no longer pending. The `/facts/` path accurately represents the target resource.
+- [ ] Register `facts` router in `backend/app/api/v1/router.py`
 - [ ] Write API-level tests in `backend/tests/test_api/test_pending.py`:
   - `test_merge_person_fact` — POST merge with valid target -> 200, status "merged"
   - `test_merge_unsupported_category_returns_422` — technology fact -> 422 merge_not_applicable
@@ -182,13 +190,14 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - `test_correct_relationship_no_separator_returns_422` — "Alice Bob" -> 422
   - `test_correct_technology_fact` — POST correct -> 200, entity_id null
   - `test_correct_unauthenticated` — no session -> 401
-  - `test_update_fact_value` — PUT with corrected_value on accepted fact -> 200
+- [ ] Write API-level tests in `backend/tests/test_api/test_facts.py` (new file):
+  - `test_update_fact_value` — PUT `/companies/{id}/facts/{fact_id}` with corrected_value on accepted fact -> 200
   - `test_update_fact_value_pending_returns_error` — PUT on pending fact -> error
   - `test_update_fact_value_unauthenticated` — no session -> 401
 
 **Why third**: the API layer is a thin wrapper over the service methods from Units 1–2. Tested independently to verify HTTP semantics, authentication, and serialization.
 
-**Rationale**: §10.4 defines POST `.../merge` and POST `.../correct` as required endpoints. UC 17 requires PUT for editing accepted fact values. The route structure follows the existing pattern in `pending.py`.
+**Rationale**: §10.4 defines POST `.../merge` and POST `.../correct` as required endpoints. UC 17 requires PUT for editing accepted fact values. Merge and correct are routed through `pending.py` because they act on pending facts. `update_fact_value` is routed through a new `facts.py` because it acts on accepted/corrected facts — routing it through `/pending/` would be semantically incorrect.
 
 ---
 
@@ -209,7 +218,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - `functional-area`: fetch all areas via `functional_area_service.list_areas()`; score each against `fact.inferred_value` using `similarity_score(area.name, inferred_value)`; sort by score desc
     - `relationship`: **polymorphic shape** — fetch all persons via `person_service.list_people()`; for each person, compute score against `subordinate` and `manager` fields (parsed from `inferred_value` which is stored as "sub > mgr"); return `{ "subordinate": [...candidates scored against sub name...], "manager": [...candidates scored against mgr name...] }` (object, not array — frontend must handle this type difference)
     - All other categories (`action-item`, `technology`, `process`, `product`, `cgkra-*`, `swot-*`, `other`): empty list — no entity disambiguation
-  - **Performance note**: candidate computation scans all entities per fact per page. For Phase 3's expected data volumes (small — single user, modest companies), this is acceptable. Phase 5+ can add caching or limit candidate lists if needed.
+  - **Performance note**: candidate computation scans all entities per fact per page. For Phase 3's expected data volumes (small — single user, modest companies), this is acceptable. **Optimization**: cache the entity lists (persons, areas) per page request — fetch once at the start of `list_pending()`, then reuse for all facts on that page. This avoids N+1 queries (one per fact) while still being O(facts * entities) for scoring. Phase 5+ can add further caching or limit candidate lists if needed.
 - [ ] Update `PendingFactItem` schema in `backend/app/schemas/inferred_fact.py`:
   - Define `CandidateItem(BaseModel)` — `entity_id: str`, `value: str`, `similarity_score: float`
   - Define `RelationshipCandidates(BaseModel)` — `subordinate: list[CandidateItem]`, `manager: list[CandidateItem]`
@@ -246,7 +255,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 
 - [ ] Extend `PersonRepository` in `backend/app/repositories/person_repository.py`:
   - `update(person_id: UUID, **fields) -> Person` — update specified fields; raise ValueError if not found
-  - `delete(person_id: UUID) -> None` — delete person; raise ValueError if not found
+  - `delete(person_id: UUID) -> None` — delete person; raise ValueError if not found. **Note**: CASCADE behavior is DB-level — relationships referencing this person (as subordinate or manager) have ON DELETE CASCADE per §11.6; action items have ON DELETE SET NULL on `person_id` per §11.4; no manual cascade code is needed in the repository
 - [ ] Extend `ActionItemRepository` in `backend/app/repositories/action_item_repository.py`:
   - `list_by_person(person_id: UUID) -> list[ActionItem]` — return action items where `person_id` matches, ordered by `created_at` desc
 - [ ] Extend `InferredFactRepository` in `backend/app/repositories/inferred_fact_repository.py`:
@@ -325,6 +334,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - `test_orgchart_mixed_roots_and_unplaced` — some in tree, some unplaced
   - `test_orgchart_empty_company` — no people -> empty roots + empty unplaced
   - `test_orgchart_person_is_manager_only` — person who manages others but isn't subordinate -> appears as root
+  - `test_orgchart_leaf_node` — person who is subordinate but manages no one -> appears in tree with empty `reports` list
   - `test_orgchart_unauthenticated` — 401
 - [ ] Write service-level tests in `backend/tests/test_services/test_orgchart_service.py` (new file):
   - `test_build_orgchart_basic_tree` — verify recursive structure
@@ -341,18 +351,19 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 **Goal**: implement the full functional area REST API from §10.6 — list, create, get detail, update (rename), and delete. The service methods were created in Unit 1; this unit adds the route handlers, schemas, and tests.
 
 - [ ] Extend `FunctionalAreaRepository`:
-  - `update(area_id: UUID, *, name: str | None = None, notes: str | None = None) -> FunctionalArea` — update specified fields; raise ValueError if not found
+  - `update(area_id: UUID, *, name: str | None = None, notes: str | None = None) -> FunctionalArea` — update specified fields; **set `updated_at = func.now()`** on every update (the ORM model should use `onupdate=func.now()` on the column, but the repository explicitly sets it as belt-and-suspenders); raise ValueError if not found
   - `delete(area_id: UUID) -> None` — delete area (does not delete linked entities — FK is ON DELETE SET NULL); raise ValueError if not found
 - [ ] Add Pydantic schemas to `backend/app/schemas/functional_area.py` (new file):
   - `AreaCreateInput` — `name: str`, `notes: str | None = None`
   - `AreaUpdateInput` — `name: str | None = None`, `notes: str | None = None` (partial update, same pattern as `CompanyUpdate`)
-  - `AreaListItem` — `area_id: UUID`, `name: str`, `created_at: str`
+  - `AreaListItem` — `area_id: UUID`, `name: str`, `notes: str | None`, `created_at: str`
   - `AreaListResponse` — `items: list[AreaListItem]`
-  - `AreaDetail` — `area_id: UUID`, `name: str`, `notes: str | None`, `created_at: str`, `updated_at: str`, `people: list[PersonListItem]`, `action_items: list[ActionItemSummary]`, `cgkra: None` (stub — populated in Phase 4 when CGKRA aggregation is implemented)
+  - `AreaDetail` — `area_id: UUID`, `name: str`, `notes: str | None`, `created_at: str`, `updated_at: str`, `people: list[PersonListItem]`, `action_items: list[ActionItemSummary]`, `inferred_facts: list[LinkedFactSummary]` (accepted/corrected facts linked to this area via `functional_area_id`), `cgkra: None` (stub — populated in Phase 4 when CGKRA aggregation is implemented)
   - `AreaCreatedResponse` — `area_id: UUID`, `name: str`
 - [ ] Extend repositories for area detail queries:
   - `PersonRepository.list_by_area(area_id: UUID) -> list[Person]` — persons where `primary_area_id` matches
   - `ActionItemRepository.list_by_area(area_id: UUID) -> list[ActionItem]` — action items where `functional_area_id` matches
+  - `InferredFactRepository.list_by_area(area_id: UUID) -> list[InferredFact]` — accepted/corrected facts where `functional_area_id` matches, ordered by `created_at`
 - [ ] Create route handlers in `backend/app/api/v1/areas.py` (new file):
   - `GET /companies/{company_id}/areas` — list areas
   - `POST /companies/{company_id}/areas` — create area
@@ -365,7 +376,8 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - `test_list_areas_empty` — empty list
   - `test_create_area` — POST -> 201
   - `test_create_area_duplicate_name_409` — same name (case-insensitive) -> 409
-  - `test_get_area_detail` — returns area with people, action items, notes, and cgkra=None
+  - `test_get_area_detail` — returns area with people, action items, inferred_facts, notes, and cgkra=None
+  - `test_get_area_detail_linked_facts` — area with linked inferred facts -> facts appear in `inferred_facts` list
   - `test_get_area_not_found` — 404
   - `test_update_area_rename` — PUT with new name -> 200
   - `test_update_area_notes` — PUT with notes -> 200, notes persisted
@@ -376,7 +388,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 
 **Why seventh**: functional area CRUD depends on FunctionalAreaService (Unit 1) and the person list (Unit 5, for area detail). Independent of org chart.
 
-**Rationale**: §10.6 defines five area endpoints. Delete does not cascade to linked persons or action items — their FK is ON DELETE SET NULL per §11.2. AreaDetail includes notes (§11.2) and a `cgkra: None` stub — §10.6 says the detail includes "people, CGKRA, action items, facts, notes" but CGKRA aggregation is deferred to Phase 4. The stub ensures the response shape is forward-compatible.
+**Rationale**: §10.6 defines five area endpoints. Delete does not cascade to linked persons or action items — their FK is ON DELETE SET NULL per §11.2. AreaDetail includes notes (§11.2), inferred_facts (accepted/corrected facts linked via `functional_area_id`), and a `cgkra: None` stub — §10.6 says the detail includes "people, CGKRA, action items, facts, notes." CGKRA aggregation is deferred to Phase 4. The stub ensures the response shape is forward-compatible.
 
 ---
 
@@ -387,7 +399,8 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 - [ ] Add frontend API functions in `frontend/src/api/pending.ts`:
   - `mergeFact(companyId, factId, targetEntityId) -> MergeResponse`
   - `correctFact(companyId, factId, correctedValue) -> CorrectResponse`
-  - `updateFactValue(companyId, factId, correctedValue) -> UpdateFactValueResponse`
+- [ ] Add frontend API function in `frontend/src/api/facts.ts` (new file):
+  - `updateFactValue(companyId, factId, correctedValue) -> UpdateFactValueResponse` — calls `PUT /companies/{id}/facts/{fact_id}` (not `/pending/`)
 - [ ] Add frontend API functions in `frontend/src/api/people.ts` (new file):
   - `listPeople(companyId) -> PersonListResponse`
   - `createPerson(companyId, data) -> PersonCreatedResponse`
@@ -396,9 +409,9 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
   - `deletePerson(companyId, personId) -> void`
 - [ ] Add frontend API functions in `frontend/src/api/areas.ts` (new file):
   - `listAreas(companyId) -> AreaListResponse`
-  - `createArea(companyId, name) -> AreaCreatedResponse`
+  - `createArea(companyId, { name, notes? }) -> AreaCreatedResponse`
   - `getArea(companyId, areaId) -> AreaDetail`
-  - `updateArea(companyId, areaId, name) -> AreaDetail`
+  - `updateArea(companyId, areaId, { name?, notes? }) -> AreaDetail`
   - `deleteArea(companyId, areaId) -> void`
 - [ ] Add frontend API function in `frontend/src/api/orgchart.ts` (new file):
   - `getOrgChart(companyId) -> OrgChartResponse`
@@ -497,7 +510,7 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 - [ ] Correct returns 422 for relationship facts without `>` separator
 - [ ] Correct for functional-area always creates a new row (no deduplication — use merge for linking to existing)
 - [ ] Disambiguation candidates are ranked by fuzzy similarity and returned in `GET .../pending`
-- [ ] ReviewService delegates entity creation to PersonService/FunctionalAreaService per §9.2 (Phase 2 architectural debt resolved)
+- [ ] ReviewService delegates entity creation to PersonService/FunctionalAreaService (partial §9.2 compliance — ActionItemRepository and RelationshipRepository remain on ReviewService directly; ActionItemService extraction deferred until action-item CRUD endpoints are added in a future phase)
 - [ ] People CRUD endpoints work (list, create, get detail with area-linked facts, update, delete)
 - [ ] Org chart endpoint returns correct tree with roots and unplaced
 - [ ] Functional area CRUD endpoints work (list, create, get detail with notes and cgkra stub, update name/notes, delete)
