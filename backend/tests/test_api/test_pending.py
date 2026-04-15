@@ -11,7 +11,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import InferredFact, Source
+from app.models.base import FunctionalArea, InferredFact, Person, Source
 
 USERNAME = "investigator"
 PASSWORD = "testpassword123"
@@ -67,6 +67,35 @@ async def _seed_facts(
         fact_ids.append(fact.id)
 
     return fact_ids
+
+
+async def _seed_person(
+    db: AsyncSession, company_id: str, name: str, title: str | None = None
+) -> UUID:
+    """Helper: insert a person directly, return its ID."""
+    person = Person(
+        company_id=UUID(company_id),
+        name=name,
+        title=title,
+    )
+    db.add(person)
+    await db.flush()
+    await db.refresh(person)
+    return person.id
+
+
+async def _seed_area(
+    db: AsyncSession, company_id: str, name: str
+) -> UUID:
+    """Helper: insert a functional area directly, return its ID."""
+    area = FunctionalArea(
+        company_id=UUID(company_id),
+        name=name,
+    )
+    db.add(area)
+    await db.flush()
+    await db.refresh(area)
+    return area.id
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -566,6 +595,296 @@ async def test_dismiss_unauthenticated(client: AsyncClient) -> None:
     try:
         response = await client.post(
             f"/api/v1/companies/{uuid4()}/pending/{uuid4()}/dismiss"
+        )
+        assert response.status_code == 401
+    finally:
+        await _ensure_authenticated(client)
+
+
+# ═════════════════════════════════════════════════════════════════
+# POST .../merge
+# ═════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_person_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../merge on a person fact with valid target returns 200 status=merged."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+
+    target_person_id = await _seed_person(db_session, company_id, "Target Person")
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "person", "value": "Duplicate Person"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/merge",
+        json={"target_entity_id": str(target_person_id)},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fact_id"] == str(fact_ids[0])
+    assert data["status"] == "merged"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_functional_area_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../merge on a functional-area fact returns 200 with merged_into_entity_type=functional_area."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+
+    area_name = f"TargetArea-{uuid4().hex[:6]}"
+    target_area_id = await _seed_area(db_session, company_id, area_name)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "functional-area", "value": "Duplicate Area"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/merge",
+        json={"target_entity_id": str(target_area_id)},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fact_id"] == str(fact_ids[0])
+    assert data["status"] == "merged"
+
+    # Verify the merged fact shows merged_into_entity_type via list_pending
+    merged = await client.get(
+        f"/api/v1/companies/{company_id}/pending?status=merged"
+    )
+    items = merged.json()["items"]
+    assert len(items) == 1
+    assert items[0]["fact_id"] == str(fact_ids[0])
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_unsupported_category_returns_422(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../merge on a technology fact returns 422 merge_not_applicable."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "technology", "value": "K8s"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/merge",
+        json={"target_entity_id": str(uuid4())},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "merge_not_applicable"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_target_not_found_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../merge with nonexistent target_entity_id returns 404."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "person", "value": "Orphan Person"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/merge",
+        json={"target_entity_id": str(uuid4())},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "merge_target_not_found"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_fact_not_pending_returns_409(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../merge on an already-accepted fact returns 409 fact_not_pending."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+
+    target_person_id = await _seed_person(db_session, company_id, "Merge Target")
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "person", "value": "Already Accepted"},
+    ])
+
+    # Accept first
+    accept_resp = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/accept"
+    )
+    assert accept_resp.status_code == 200
+
+    # Try to merge — should fail
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/merge",
+        json={"target_entity_id": str(target_person_id)},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "fact_not_pending"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_unauthenticated(client: AsyncClient) -> None:
+    """POST .../merge without session returns 401."""
+    client.cookies.clear()
+    try:
+        response = await client.post(
+            f"/api/v1/companies/{uuid4()}/pending/{uuid4()}/merge",
+            json={"target_entity_id": str(uuid4())},
+        )
+        assert response.status_code == 401
+    finally:
+        await _ensure_authenticated(client)
+
+
+# ═════════════════════════════════════════════════════════════════
+# POST .../correct
+# ═════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_person_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on a person fact with 'Jane Smith, CTO' returns 200 with entity_id."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "person", "value": "Wrong Name"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": "Jane Smith, CTO"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["fact_id"] == str(fact_ids[0])
+    assert data["status"] == "corrected"
+    assert data["entity_id"] is not None
+    UUID(data["entity_id"])
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_functional_area_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on a functional-area fact creates a new area."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "functional-area", "value": "Wrong Area"},
+    ])
+
+    area_name = f"CorrectedArea-{uuid4().hex[:6]}"
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": area_name},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "corrected"
+    assert data["entity_id"] is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_functional_area_collision_returns_409(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on functional-area with existing name returns 409 area_name_conflict."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+
+    existing_name = f"ExistingArea-{uuid4().hex[:6]}"
+    await _seed_area(db_session, company_id, existing_name)
+
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "functional-area", "value": "Wrong Area"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": existing_name},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "area_name_conflict"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_relationship_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on a relationship fact with 'Alice > Bob' returns 200."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "relationship", "value": "Wrong Sub > Wrong Mgr"},
+    ])
+
+    sub_name = f"CorrectSub-{uuid4().hex[:6]}"
+    mgr_name = f"CorrectMgr-{uuid4().hex[:6]}"
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": f"{sub_name} > {mgr_name}"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "corrected"
+    assert data["entity_id"] is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_relationship_no_separator_returns_422(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on a relationship without '>' returns 422 invalid_corrected_value."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "relationship", "value": "Alice > Bob"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": "Alice reports to Bob"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_corrected_value"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_technology_fact(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """POST .../correct on a technology fact returns 200 with entity_id=null."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    fact_ids = await _seed_facts(db_session, company_id, [
+        {"category": "technology", "value": "K8s"},
+    ])
+
+    response = await client.post(
+        f"/api/v1/companies/{company_id}/pending/{fact_ids[0]}/correct",
+        json={"corrected_value": "Kubernetes"},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "corrected"
+    assert data["entity_id"] is None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_unauthenticated(client: AsyncClient) -> None:
+    """POST .../correct without session returns 401."""
+    client.cookies.clear()
+    try:
+        response = await client.post(
+            f"/api/v1/companies/{uuid4()}/pending/{uuid4()}/correct",
+            json={"corrected_value": "Something"},
         )
         assert response.status_code == 401
     finally:

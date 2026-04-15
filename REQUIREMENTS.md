@@ -909,6 +909,8 @@ All error responses use a consistent JSON envelope regardless of status code:
 | `state_conflict`           | 409       | `POST /sources/{id}/retry` — source is not in `failed` state                                                          |
 | `merge_not_applicable`     | 422       | `POST .../merge` — category does not support merge (`relationship`, `action-item`, or non-entity categories)          |
 | `invalid_corrected_value`  | 422       | `POST .../correct` — `corrected_value` fails format validation (e.g., missing `>` separator for `relationship` facts) |
+| `fact_not_editable`        | 409       | `PUT /companies/{id}/facts/{fact_id}` — fact status is not `accepted` or `corrected` (must accept/correct first)      |
+| `area_name_conflict`       | 409       | `POST .../correct` on `functional-area` — corrected name collides with existing area; use merge instead               |
 | `name_conflict`            | 409       | `POST /companies` — exact company name already exists                                                                 |
 | `routing_error`            | 422       | Ingestion — missing, multiple, or unresolvable routing prefix                                                         |
 | `internal_error`           | 500       | Any endpoint on unexpected failure                                                                                    |
@@ -1014,6 +1016,7 @@ Note: Email ingestion is handled by the background IMAP poller — there is no R
 | POST   | `/companies/{id}/pending/{fact_id}/merge`   | Merge with an existing entity                                           |
 | POST   | `/companies/{id}/pending/{fact_id}/correct` | Accept with an investigator-supplied correction                         |
 | POST   | `/companies/{id}/pending/{fact_id}/dismiss` | Dismiss (reject) an inferred fact without accepting it                  |
+| PUT    | `/companies/{id}/facts/{fact_id}`           | Edit the corrected value of an accepted or corrected fact (UC 17)       |
 
 
 **GET `/companies/{id}/pending`**
@@ -1067,6 +1070,17 @@ Behaviour branches on `category`. Only `person` and `functional-area` support me
 - `**action-item**`: create new `action_items` row with `description = corrected_value`; status → `corrected`; `inferred_fact_id` set on the new row; same dedup rule as accept — if an open action item with the same description (case-insensitive) already exists for this company, reuse the existing row instead of creating a duplicate
 - `**relationship**`: parse `corrected_value` as `<subordinate> > <manager>` (same syntax as the `rel:` prefix tag); run the same name-resolution algorithm as `accept` (exact match → stub creation → fuzzy tiebreak); insert `relationships` row and update `persons.reports_to_person_id`; status → `corrected`; returns 422 `invalid_corrected_value` if the `>` separator is absent
 - **All other categories** (`technology`, `process`, `cgkra-*`, `swot-*`, `other`): store `corrected_value` on the InferredFact; status → `corrected`; no entity creation — the corrected text is the terminal artifact for these fact types
+
+**PUT `/companies/{id}/facts/{fact_id}`**
+
+- Input: `{ "corrected_value": string }` — the new corrected value; must be non-empty after stripping whitespace
+- Output: `{ "fact_id": UUID, "status": string }` — the fact's ID and current status (unchanged by this operation)
+
+In-place editing of an already-accepted or corrected InferredFact (UC 17). This is distinct from the `correct` action above, which transitions a pending fact to corrected and creates entities. `PUT .../facts/{fact_id}` only updates the `corrected_value` field on an existing accepted or corrected fact — it does **not** change the fact's status and does **not** create or modify any entity rows.
+
+- Validates that the fact exists, belongs to the company, and has status `accepted` or `corrected`. Rejects `pending` (must accept/correct first), `dismissed` (already rejected), and `merged` (belongs to another entity — editing would be incoherent) with 409 `fact_not_editable`.
+- The original `inferred_value` is never overwritten per §6.3 — `corrected_value` is the only mutable field.
+- This endpoint is routed under `/facts/` (not `/pending/`) because the fact is no longer pending — it has already been reviewed.
 
 ---
 

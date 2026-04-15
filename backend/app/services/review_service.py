@@ -585,7 +585,7 @@ class ReviewService:
 
     async def update_fact_value(
         self, company_id: str, fact_id: str, corrected_value: str
-    ) -> None:
+    ) -> str:
         """Edit the corrected_value of an already-accepted or corrected fact.
 
         UC 17: in-place editing on the company profile. Does NOT change
@@ -593,6 +593,8 @@ class ReviewService:
         corrected. The original inferred_value is never overwritten per §6.3.
 
         Rejects pending, dismissed, and merged facts.
+
+        Returns the fact's current status (unchanged by this operation).
         """
         cid = UUID(company_id)
         fid = UUID(fact_id)
@@ -613,3 +615,4 @@ class ReviewService:
         await self._inferred_fact_repo.update_corrected_value(
             fid, corrected_value
         )
+        return fact.status

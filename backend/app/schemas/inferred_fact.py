@@ -1,5 +1,6 @@
 """Pydantic schemas for inferred facts — LLM output model and review endpoints."""
 
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator, model_validator
@@ -100,3 +101,63 @@ class DismissResponse(BaseModel):
 
     fact_id: UUID
     status: str
+
+
+# ---------------------------------------------------------------------------
+# Merge / Correct / Update fact value schemas (Unit 3)
+# ---------------------------------------------------------------------------
+
+
+class MergeRequest(BaseModel):
+    """POST .../merge request body."""
+
+    target_entity_id: UUID
+
+
+class MergeResponse(BaseModel):
+    """POST .../merge response."""
+
+    fact_id: UUID
+    status: Literal["merged"]
+
+
+class CorrectRequest(BaseModel):
+    """POST .../correct request body."""
+
+    corrected_value: str
+
+    @field_validator("corrected_value")
+    @classmethod
+    def _corrected_value_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("corrected_value must be non-empty")
+        return v
+
+
+class CorrectResponse(BaseModel):
+    """POST .../correct response."""
+
+    fact_id: UUID
+    status: Literal["corrected"]
+    entity_id: str | None
+
+
+class UpdateFactValueRequest(BaseModel):
+    """PUT /companies/{id}/facts/{fact_id} request body."""
+
+    corrected_value: str
+
+    @field_validator("corrected_value")
+    @classmethod
+    def _corrected_value_non_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("corrected_value must be non-empty")
+        return v
+
+
+class UpdateFactValueResponse(BaseModel):
+    """PUT /companies/{id}/facts/{fact_id} response."""
+
+    fact_id: UUID
+    status: str
+    corrected_value: str

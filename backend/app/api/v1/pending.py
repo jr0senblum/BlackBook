@@ -1,8 +1,10 @@
 """Route handlers for pending review endpoints.
 
-GET  /companies/{id}/pending              — list pending/reviewed facts
-POST /companies/{id}/pending/{fact_id}/accept  — accept a fact
-POST /companies/{id}/pending/{fact_id}/dismiss — dismiss a fact
+GET  /companies/{id}/pending                    — list pending/reviewed facts
+POST /companies/{id}/pending/{fact_id}/accept   — accept a fact
+POST /companies/{id}/pending/{fact_id}/merge    — merge with existing entity
+POST /companies/{id}/pending/{fact_id}/correct  — accept with correction
+POST /companies/{id}/pending/{fact_id}/dismiss  — dismiss a fact
 """
 
 from typing import Literal
@@ -13,7 +15,11 @@ from fastapi import APIRouter, Depends, Query
 from app.dependencies import get_current_session, get_review_service
 from app.schemas.inferred_fact import (
     AcceptResponse,
+    CorrectRequest,
+    CorrectResponse,
     DismissResponse,
+    MergeRequest,
+    MergeResponse,
     PendingFactItem,
     PendingFactListResponse,
 )
@@ -84,3 +90,43 @@ async def dismiss_fact(
     """Dismiss a pending fact."""
     await review_service.dismiss_fact(str(company_id), str(fact_id))
     return DismissResponse(fact_id=fact_id, status="dismissed")
+
+
+@router.post(
+    "/{company_id}/pending/{fact_id}/merge",
+    response_model=MergeResponse,
+)
+async def merge_fact(
+    company_id: UUID,
+    fact_id: UUID,
+    body: MergeRequest,
+    review_service: ReviewService = Depends(get_review_service),
+    _session: str = Depends(get_current_session),
+) -> MergeResponse:
+    """Merge a pending fact into an existing entity."""
+    await review_service.merge_fact(
+        str(company_id), str(fact_id), str(body.target_entity_id)
+    )
+    return MergeResponse(fact_id=fact_id, status="merged")
+
+
+@router.post(
+    "/{company_id}/pending/{fact_id}/correct",
+    response_model=CorrectResponse,
+)
+async def correct_fact(
+    company_id: UUID,
+    fact_id: UUID,
+    body: CorrectRequest,
+    review_service: ReviewService = Depends(get_review_service),
+    _session: str = Depends(get_current_session),
+) -> CorrectResponse:
+    """Correct a pending fact with an investigator-supplied value."""
+    entity_id = await review_service.correct_fact(
+        str(company_id), str(fact_id), body.corrected_value
+    )
+    return CorrectResponse(
+        fact_id=fact_id,
+        status="corrected",
+        entity_id=entity_id,
+    )
