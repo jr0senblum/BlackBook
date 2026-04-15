@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from app.exceptions import AreaNameConflictError, AreaNotFoundError
+from app.exceptions import AreaCompanyMismatchError, AreaNameConflictError, AreaNotFoundError
 from app.models.base import FunctionalArea
 from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
@@ -45,14 +45,21 @@ class FunctionalAreaService:
     ) -> FunctionalArea:
         """Insert a new functional area row.
 
-        Does NOT deduplicate — the UNIQUE constraint on (company_id, name)
-        will raise IntegrityError on a true duplicate. This is correct per
-        spec: the investigator's tool for linking to an existing area is
-        merge, not correct.
+        Does NOT deduplicate — if the name collides with an existing area's
+        (company_id, name) UNIQUE constraint, raises AreaNameConflictError
+        (409) so the caller knows to use merge instead.
         """
-        return await self._area_repo.create(
-            company_id=company_id, name=name
-        )
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            return await self._area_repo.create(
+                company_id=company_id, name=name
+            )
+        except IntegrityError:
+            raise AreaNameConflictError(
+                f"Functional area '{name}' already exists for this company. "
+                "Use merge to link to the existing area."
+            )
 
     async def create_area_safe(
         self, company_id: UUID, name: str
@@ -62,6 +69,13 @@ class FunctionalAreaService:
         If an area with the same name already exists (case-insensitive),
         returns the existing row. Otherwise creates a new one. Preserves
         Phase 2 behavior to prevent UNIQUE constraint violations on accept.
+
+        **Spec departure (I2)**: §10.4 accept/functional-area says "creates
+        a new row in functional_areas with name = inferred_value." This
+        method deduplicates instead. Rationale: without dedup, accepting
+        the same area name twice violates the UNIQUE constraint on
+        (company_id, name), crashing the accept flow. Merge is available
+        for ambiguous/fuzzy cases.
         """
         existing = await self._area_repo.get_by_name_iexact(company_id, name)
         if existing is not None:
@@ -90,7 +104,7 @@ class FunctionalAreaService:
         if area is None:
             raise AreaNotFoundError(f"Functional area not found: {area_id}")
         if area.company_id != company_id:
-            raise AreaNotFoundError(
+            raise AreaCompanyMismatchError(
                 f"Functional area {area_id} does not belong to company {company_id}"
             )
         # Basic detail — enrichment added in Unit 7

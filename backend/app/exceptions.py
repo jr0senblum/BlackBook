@@ -154,7 +154,40 @@ class AreaNotFoundError(DomainError):
     message = "Functional area not found"
 
 
+class AreaCompanyMismatchError(DomainError):
+    code = "area_company_mismatch"
+    status_code = 404
+    message = "Functional area does not belong to this company"
+
+
 class AreaNameConflictError(DomainError):
     code = "area_name_conflict"
     status_code = 409
     message = "A functional area with this name already exists"
+
+
+# --- Merge / Correct exceptions ---
+
+
+class MergeNotApplicableError(DomainError):
+    code = "merge_not_applicable"
+    status_code = 422
+    message = "Merge is not supported for this category"
+
+
+class InvalidCorrectedValueError(DomainError):
+    code = "invalid_corrected_value"
+    status_code = 422
+    message = "Corrected value is invalid for this category"
+
+
+class MergeTargetNotFoundError(DomainError):
+    code = "merge_target_not_found"
+    status_code = 404
+    message = "Merge target entity not found"
+
+
+class FactNotEditableError(DomainError):
+    code = "fact_not_editable"
+    status_code = 409
+    message = "Fact is not in an editable status (must be accepted or corrected)"

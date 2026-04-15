@@ -1,10 +1,13 @@
 """Tests for PersonService — Phase 3 Unit 1.
 
 Tests cover:
-  - create_person: creates a person with name and title
+  - create_person: creates a person with name and title; with FK fields
   - create_person_from_value: parses "name, title" (with and without comma)
-  - get_or_create_person_from_value: dedup, backfill, create-if-new
-  - resolve_person: exact match, multiple matches, no match (stub creation)
+  - get_or_create_person_from_value: dedup, backfill, create-if-new,
+    title preservation when existing person already has title
+  - resolve_person: exact match, multiple matches (fuzzy tiebreak), no match (stub creation)
+  - list_people: returns all persons for a company
+  - get_person: returns basic detail; company guard; not-found guard
 """
 
 from uuid import uuid4
@@ -13,7 +16,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.base import Company
+from app.exceptions import PersonCompanyMismatchError, PersonNotFoundError
+from app.models.base import Company, FunctionalArea
 from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
@@ -160,6 +164,37 @@ async def test_get_or_create_person_backfill_title(
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_get_or_create_person_multiple_matches_reuses_first(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """get_or_create with multiple name matches reuses one of the existing rows.
+
+    The spec (§10.4) says "if a match exists, reuse it" using singular language.
+    When multiple persons share the same name (case-insensitively), the method
+    returns the first match from the query. No new person is created.
+    """
+    company = await _make_company(db_session)
+    dup_name = f"MultiMatch-{uuid4().hex[:6]}"
+
+    p1 = await person_repo.create(
+        company_id=company.id, name=dup_name, title="VP"
+    )
+    p2 = await person_repo.create(
+        company_id=company.id, name=dup_name, title="Director"
+    )
+
+    person = await person_service.get_or_create_person_from_value(
+        company.id, f"{dup_name}, New Title"
+    )
+
+    # Must reuse an existing row, NOT create a third
+    assert person.id in {p1.id, p2.id}
+    # Verify no new person was created
+    all_matches = await person_repo.get_by_name_iexact(company.id, dup_name)
+    assert len(all_matches) == 2
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_get_or_create_person_no_match_creates(
     db_session: AsyncSession, person_service: PersonService, person_repo
 ):
@@ -203,10 +238,10 @@ async def test_resolve_person_exact_match(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_person_multiple_matches_uses_first(
+async def test_resolve_person_multiple_matches_uses_highest_fuzzy_score(
     db_session: AsyncSession, person_service: PersonService, person_repo
 ):
-    """resolve_person with multiple matches uses first."""
+    """resolve_person with multiple matches uses the highest fuzzy-score match per §10.4."""
     company = await _make_company(db_session)
     dup_name = f"ResolveDup-{uuid4().hex[:6]}"
 
@@ -218,7 +253,10 @@ async def test_resolve_person_multiple_matches_uses_first(
     )
 
     resolved_id = await person_service.resolve_person(company.id, dup_name)
-    # Should return one of the existing IDs (first from query)
+    # Both share the same name; fuzzy scoring uses "name, title" when title
+    # is present. Either is acceptable since the names are identical — the
+    # key requirement is that resolve_person doesn't crash and returns a
+    # valid existing ID (not a new stub).
     assert resolved_id in {p1.id, p2.id}
 
 
@@ -238,3 +276,145 @@ async def test_resolve_person_no_match_creates_stub(
     assert stub.name == stub_name
     assert stub.title is None  # stub has no title
     assert stub.company_id == company.id
+
+
+# ---------------------------------------------------------------------------
+# create_person with FK fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_create_person_with_fk_fields(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """create_person with primary_area_id and reports_to_person_id persists FK fields."""
+    company = await _make_company(db_session)
+
+    # Create area and manager first
+    area = FunctionalArea(company_id=company.id, name=f"Area-{uuid4().hex[:6]}")
+    db_session.add(area)
+    await db_session.flush()
+    await db_session.refresh(area)
+
+    manager = await person_repo.create(
+        company_id=company.id, name=f"Manager-{uuid4().hex[:6]}"
+    )
+
+    person = await person_service.create_person(
+        company.id,
+        name="FK Person",
+        title="Engineer",
+        primary_area_id=area.id,
+        reports_to_person_id=manager.id,
+    )
+
+    assert person.primary_area_id == area.id
+    assert person.reports_to_person_id == manager.id
+
+
+# ---------------------------------------------------------------------------
+# get_or_create title preservation test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_or_create_person_does_not_overwrite_existing_title(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """get_or_create with existing person who already has a title does NOT overwrite it."""
+    company = await _make_company(db_session)
+
+    existing = await person_repo.create(
+        company_id=company.id, name="TitleKeep Person", title="Original Title"
+    )
+
+    person = await person_service.get_or_create_person_from_value(
+        company.id, "TitleKeep Person, New Title"
+    )
+
+    assert person.id == existing.id
+    # Title must be preserved — NOT overwritten
+    refreshed = await person_repo.get_by_id(existing.id)
+    assert refreshed.title == "Original Title"
+
+
+# ---------------------------------------------------------------------------
+# list_people tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_people(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """list_people returns all persons for a company, ordered by name."""
+    company = await _make_company(db_session)
+
+    await person_repo.create(company_id=company.id, name=f"Bravo-{uuid4().hex[:6]}")
+    await person_repo.create(company_id=company.id, name=f"Alpha-{uuid4().hex[:6]}")
+
+    people = await person_service.list_people(company.id)
+    assert len(people) == 2
+    # Ordered by name ascending
+    assert people[0].name < people[1].name
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_people_empty(
+    db_session: AsyncSession, person_service: PersonService
+):
+    """list_people with no people returns empty list."""
+    company = await _make_company(db_session)
+
+    people = await person_service.list_people(company.id)
+    assert people == []
+
+
+# ---------------------------------------------------------------------------
+# get_person tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_person(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """get_person returns basic detail dict."""
+    company = await _make_company(db_session)
+    person = await person_repo.create(
+        company_id=company.id, name="Detail Person", title="VP"
+    )
+
+    detail = await person_service.get_person(company.id, person.id)
+
+    assert detail["person_id"] == person.id
+    assert detail["name"] == "Detail Person"
+    assert detail["title"] == "VP"
+    assert "primary_area_id" in detail
+    assert "reports_to_person_id" in detail
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_person_not_found(
+    db_session: AsyncSession, person_service: PersonService
+):
+    """get_person with nonexistent ID raises PersonNotFoundError."""
+    company = await _make_company(db_session)
+
+    with pytest.raises(PersonNotFoundError):
+        await person_service.get_person(company.id, uuid4())
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_get_person_wrong_company(
+    db_session: AsyncSession, person_service: PersonService, person_repo
+):
+    """get_person with person belonging to different company raises PersonCompanyMismatchError."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    person = await person_repo.create(
+        company_id=company.id, name="WrongCo Person"
+    )
+
+    with pytest.raises(PersonCompanyMismatchError):
+        await person_service.get_person(other_company.id, person.id)

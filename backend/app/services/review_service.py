@@ -20,9 +20,18 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from app.exceptions import (
+    AreaNameConflictError,
+    AreaNotFoundError,
+    AreaCompanyMismatchError,
     FactCompanyMismatchError,
+    FactNotEditableError,
     FactNotFoundError,
     FactNotPendingError,
+    InvalidCorrectedValueError,
+    MergeNotApplicableError,
+    MergeTargetNotFoundError,
+    PersonCompanyMismatchError,
+    PersonNotFoundError,
 )
 from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
@@ -390,7 +399,7 @@ class ReviewService:
         existing = await self._relationship_repo.get_by_sub_mgr(sub_id, mgr_id)
         if existing is not None:
             # Still update reports_to in case it was cleared
-            await self._person_service._person_repo.update_reports_to(sub_id, mgr_id)
+            await self._person_service.update_reports_to(sub_id, mgr_id)
             return str(existing.id)
 
         # Create relationship row
@@ -401,7 +410,206 @@ class ReviewService:
             inferred_fact_id=fact.id,
         )
 
-        # Set reports_to_person_id on the subordinate
-        await self._person_service._person_repo.update_reports_to(sub_id, mgr_id)
+        # Set reports_to_person_id on the subordinate (§10.4 convenience denormalization)
+        await self._person_service.update_reports_to(sub_id, mgr_id)
 
         return str(relationship.id)
+
+    # ── Merge a pending fact into an existing entity ─────────────
+
+    async def merge_fact(
+        self, company_id: str, fact_id: str, target_entity_id: str
+    ) -> None:
+        """Merge a pending fact into an existing person or functional area.
+
+        Only person and functional-area categories support merge — all others
+        raise MergeNotApplicableError (422).
+
+        Validates that the target entity exists and belongs to the correct
+        company; raises MergeTargetNotFoundError (404) otherwise.
+        """
+        cid = UUID(company_id)
+        fid = UUID(fact_id)
+
+        fact = await self._inferred_fact_repo.get_by_id(fid)
+        if fact is None:
+            raise FactNotFoundError(f"Inferred fact not found: {fact_id}")
+        if fact.company_id != cid:
+            raise FactCompanyMismatchError(
+                f"Fact {fact_id} does not belong to company {company_id}"
+            )
+        if fact.status != "pending":
+            raise FactNotPendingError(
+                f"Fact status is '{fact.status}', not 'pending'"
+            )
+
+        if fact.category == "person":
+            try:
+                await self._person_service.get_person(cid, UUID(target_entity_id))
+            except (PersonNotFoundError, PersonCompanyMismatchError):
+                raise MergeTargetNotFoundError(
+                    f"Person not found: {target_entity_id}"
+                )
+            merged_into_entity_type = "person"
+
+        elif fact.category == "functional-area":
+            try:
+                await self._functional_area_service.get_area(
+                    cid, UUID(target_entity_id)
+                )
+            except (AreaNotFoundError, AreaCompanyMismatchError):
+                raise MergeTargetNotFoundError(
+                    f"Functional area not found: {target_entity_id}"
+                )
+            merged_into_entity_type = "functional_area"
+
+        else:
+            raise MergeNotApplicableError(
+                f"Merge is not supported for category '{fact.category}'"
+            )
+
+        now = datetime.now(timezone.utc)
+        await self._inferred_fact_repo.update_status(
+            fid,
+            status="merged",
+            reviewed_at=now,
+            merged_into_entity_type=merged_into_entity_type,
+            merged_into_entity_id=UUID(target_entity_id),
+        )
+
+    # ── Correct a pending fact ──────────────────────────────────
+
+    async def correct_fact(
+        self, company_id: str, fact_id: str, corrected_value: str
+    ) -> str | None:
+        """Correct a pending fact, creating entities as needed.
+
+        Returns the entity_id (str) of the created entity, or None for
+        categories that create no entity. The corrected_value is stored
+        on the fact; the original inferred_value is never overwritten.
+        """
+        cid = UUID(company_id)
+        fid = UUID(fact_id)
+
+        fact = await self._inferred_fact_repo.get_by_id(fid)
+        if fact is None:
+            raise FactNotFoundError(f"Inferred fact not found: {fact_id}")
+        if fact.company_id != cid:
+            raise FactCompanyMismatchError(
+                f"Fact {fact_id} does not belong to company {company_id}"
+            )
+        if fact.status != "pending":
+            raise FactNotPendingError(
+                f"Fact status is '{fact.status}', not 'pending'"
+            )
+
+        entity_id: str | None = None
+
+        if fact.category == "person":
+            # Always creates new — correct does NOT dedup.
+            person = await self._person_service.create_person_from_value(
+                cid, corrected_value
+            )
+            entity_id = str(person.id)
+
+        elif fact.category == "functional-area":
+            # No dedup — always creates new row per §10.4. If name collides
+            # with existing UNIQUE constraint, AreaNameConflictError (409)
+            # surfaces telling the investigator to merge instead.
+            area = await self._functional_area_service.create_area(
+                cid, corrected_value.strip()
+            )
+            entity_id = str(area.id)
+
+        elif fact.category == "action-item":
+            # Same dedup rule as accept — reuse existing if matching desc.
+            description = corrected_value.strip()
+            existing = await self._action_item_repo.get_by_description_iexact(
+                cid, description
+            )
+            if existing is not None:
+                entity_id = str(existing.id)
+            else:
+                action_item = await self._action_item_repo.create(
+                    company_id=cid,
+                    description=description,
+                    source_id=fact.source_id,
+                    inferred_fact_id=fact.id,
+                )
+                entity_id = str(action_item.id)
+
+        elif fact.category == "relationship":
+            # Parse "subordinate > manager" from corrected_value.
+            if ">" not in corrected_value:
+                raise InvalidCorrectedValueError(
+                    "Relationship corrected_value must contain '>' separator "
+                    "(format: 'subordinate > manager')"
+                )
+            parts = corrected_value.split(">", 1)
+            sub_name = parts[0].strip()
+            mgr_name = parts[1].strip()
+
+            sub_id = await self._person_service.resolve_person(cid, sub_name)
+            mgr_id = await self._person_service.resolve_person(cid, mgr_name)
+
+            # Dedup — check for existing relationship
+            existing_rel = await self._relationship_repo.get_by_sub_mgr(
+                sub_id, mgr_id
+            )
+            if existing_rel is not None:
+                await self._person_service.update_reports_to(sub_id, mgr_id)
+                entity_id = str(existing_rel.id)
+            else:
+                relationship = await self._relationship_repo.create(
+                    company_id=cid,
+                    subordinate_person_id=sub_id,
+                    manager_person_id=mgr_id,
+                    inferred_fact_id=fact.id,
+                )
+                await self._person_service.update_reports_to(sub_id, mgr_id)
+                entity_id = str(relationship.id)
+
+        # All other categories: no entity creation, just store corrected_value.
+
+        now = datetime.now(timezone.utc)
+        await self._inferred_fact_repo.update_status(
+            fid,
+            status="corrected",
+            reviewed_at=now,
+            corrected_value=corrected_value,
+        )
+
+        return entity_id
+
+    # ── Update fact value (UC 17) ───────────────────────────────
+
+    async def update_fact_value(
+        self, company_id: str, fact_id: str, corrected_value: str
+    ) -> None:
+        """Edit the corrected_value of an already-accepted or corrected fact.
+
+        UC 17: in-place editing on the company profile. Does NOT change
+        status — an accepted fact stays accepted, a corrected fact stays
+        corrected. The original inferred_value is never overwritten per §6.3.
+
+        Rejects pending, dismissed, and merged facts.
+        """
+        cid = UUID(company_id)
+        fid = UUID(fact_id)
+
+        fact = await self._inferred_fact_repo.get_by_id(fid)
+        if fact is None:
+            raise FactNotFoundError(f"Inferred fact not found: {fact_id}")
+        if fact.company_id != cid:
+            raise FactCompanyMismatchError(
+                f"Fact {fact_id} does not belong to company {company_id}"
+            )
+        if fact.status not in ("accepted", "corrected"):
+            raise FactNotEditableError(
+                f"Fact status is '{fact.status}' — must be 'accepted' or "
+                "'corrected' to edit"
+            )
+
+        await self._inferred_fact_repo.update_corrected_value(
+            fid, corrected_value
+        )

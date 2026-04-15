@@ -123,6 +123,25 @@ class InferredFactRepository:
 
         return items, total
 
+    async def update_corrected_value(
+        self,
+        fact_id: UUID,
+        corrected_value: str,
+    ) -> InferredFact:
+        """Set corrected_value on a fact without changing status.
+
+        Used by UC 17 (update_fact_value) to edit an already-accepted or
+        corrected fact in place.  The original ``inferred_value`` is never
+        overwritten per §6.3.
+        """
+        fact = await self.get_by_id(fact_id)
+        if fact is None:
+            raise ValueError(f"InferredFact not found: {fact_id}")
+        fact.corrected_value = corrected_value
+        await self._db.flush()
+        await self._db.refresh(fact)
+        return fact
+
     async def update_status(
         self,
         fact_id: UUID,

@@ -23,7 +23,16 @@ from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.person_repository import PersonRepository
 from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
-from app.exceptions import FactCompanyMismatchError, FactNotFoundError, FactNotPendingError
+from app.exceptions import (
+    AreaNameConflictError,
+    FactCompanyMismatchError,
+    FactNotEditableError,
+    FactNotFoundError,
+    FactNotPendingError,
+    InvalidCorrectedValueError,
+    MergeNotApplicableError,
+    MergeTargetNotFoundError,
+)
 from app.schemas.inferred_fact import LLMInferredFact
 from app.services.functional_area_service import FunctionalAreaService
 from app.services.person_service import PersonService
@@ -1558,3 +1567,1058 @@ async def test_save_facts_hybrid_tagged_takes_precedence(
     assert len(rows) == 1
     # Tagged match takes precedence — has canonical_key prefix
     assert rows[0].source_line == "t: Docker and containerization"
+
+
+# ---------------------------------------------------------------------------
+# Delegation verification (F6) — verify ReviewService delegates to domain services
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accept_person_delegates_to_person_service(
+    db_session: AsyncSession, fact_repo,
+):
+    """accept_fact on a person fact calls person_service.get_or_create_person_from_value().
+
+    Verifies the architectural delegation from ReviewService to PersonService
+    per §9.2, not just the end result.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    # Create a pending person fact
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Delegation Test Person, CTO",
+    }])
+    fact = rows[0]
+
+    # Build a ReviewService with a mocked PersonService
+    mock_person = AsyncMock()
+    mock_person.id = uuid4()
+    mock_person_service = AsyncMock()
+    mock_person_service.get_or_create_person_from_value.return_value = mock_person
+
+    svc = ReviewService(
+        inferred_fact_repo=fact_repo,
+        source_repo=AsyncMock(),
+        person_service=mock_person_service,
+        functional_area_service=AsyncMock(),
+        action_item_repo=AsyncMock(),
+        relationship_repo=AsyncMock(),
+    )
+
+    entity_id = await svc.accept_fact(str(company.id), str(fact.id))
+
+    # Verify delegation: PersonService was called, not PersonRepository directly
+    mock_person_service.get_or_create_person_from_value.assert_called_once_with(
+        company.id, "Delegation Test Person, CTO"
+    )
+    assert entity_id == str(mock_person.id)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accept_functional_area_delegates_to_area_service(
+    db_session: AsyncSession, fact_repo,
+):
+    """accept_fact on a functional-area fact calls functional_area_service.create_area_safe().
+
+    Verifies the architectural delegation from ReviewService to
+    FunctionalAreaService per §9.2.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "functional-area",
+        "inferred_value": "  Delegation Area  ",
+    }])
+    fact = rows[0]
+
+    mock_area = AsyncMock()
+    mock_area.id = uuid4()
+    mock_area_service = AsyncMock()
+    mock_area_service.create_area_safe.return_value = mock_area
+
+    svc = ReviewService(
+        inferred_fact_repo=fact_repo,
+        source_repo=AsyncMock(),
+        person_service=AsyncMock(),
+        functional_area_service=mock_area_service,
+        action_item_repo=AsyncMock(),
+        relationship_repo=AsyncMock(),
+    )
+
+    entity_id = await svc.accept_fact(str(company.id), str(fact.id))
+
+    # Verify delegation: FunctionalAreaService was called with stripped value
+    mock_area_service.create_area_safe.assert_called_once_with(
+        company.id, "Delegation Area"
+    )
+    assert entity_id == str(mock_area.id)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_accept_relationship_delegates_resolve_to_person_service(
+    db_session: AsyncSession, fact_repo,
+):
+    """accept_fact on a relationship fact calls person_service.resolve_person().
+
+    Verifies that name resolution is delegated to PersonService, not
+    done directly via PersonRepository.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "relationship",
+        "inferred_value": "Alice > Bob",
+    }])
+    fact = rows[0]
+
+    sub_id = uuid4()
+    mgr_id = uuid4()
+    mock_person_service = AsyncMock()
+    mock_person_service.resolve_person.side_effect = [sub_id, mgr_id]
+    # The _person_repo.update_reports_to is accessed via person_service
+    mock_person_service._person_repo = AsyncMock()
+
+    mock_rel = AsyncMock()
+    mock_rel.id = uuid4()
+    mock_relationship_repo = AsyncMock()
+    mock_relationship_repo.get_by_sub_mgr.return_value = None
+    mock_relationship_repo.create.return_value = mock_rel
+
+    svc = ReviewService(
+        inferred_fact_repo=fact_repo,
+        source_repo=AsyncMock(),
+        person_service=mock_person_service,
+        functional_area_service=AsyncMock(),
+        action_item_repo=AsyncMock(),
+        relationship_repo=mock_relationship_repo,
+    )
+
+    entity_id = await svc.accept_fact(str(company.id), str(fact.id))
+
+    # Verify resolve_person was called for both subordinate and manager
+    assert mock_person_service.resolve_person.call_count == 2
+    calls = mock_person_service.resolve_person.call_args_list
+    assert calls[0].args == (company.id, "Alice")
+    assert calls[1].args == (company.id, "Bob")
+
+
+# ---------------------------------------------------------------------------
+# merge_fact tests (Unit 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_person_success(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """merge_fact on person sets status=merged with correct merged_into fields."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    # Create a target person to merge into
+    target = await person_repo.create(company_id=company.id, name="Target Person")
+
+    # Create a pending person fact
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Some Duplicate Person",
+    }])
+    fact = rows[0]
+
+    await review_service.merge_fact(
+        str(company.id), str(fact.id), str(target.id)
+    )
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "merged"
+    assert updated.merged_into_entity_type == "person"
+    assert updated.merged_into_entity_id == target.id
+    assert updated.reviewed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_functional_area_success(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, area_repo,
+):
+    """merge_fact on functional-area sets status=merged with correct merged_into fields."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    target = await area_repo.create(company_id=company.id, name=f"TargetArea-{uuid4().hex[:6]}")
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "functional-area",
+        "inferred_value": "Duplicate Area Name",
+    }])
+    fact = rows[0]
+
+    await review_service.merge_fact(
+        str(company.id), str(fact.id), str(target.id)
+    )
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "merged"
+    assert updated.merged_into_entity_type == "functional_area"
+    assert updated.merged_into_entity_id == target.id
+    assert updated.reviewed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_target_not_found(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact with nonexistent target_entity_id raises MergeTargetNotFoundError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Orphan Person",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeTargetNotFoundError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_target_wrong_company(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """merge_fact with target belonging to different company raises MergeTargetNotFoundError."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    # Create target in OTHER company
+    target = await person_repo.create(
+        company_id=other_company.id, name="Wrong Company Person"
+    )
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Some Person",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeTargetNotFoundError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(target.id)
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_relationship_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on relationship category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "relationship",
+        "inferred_value": "Alice > Bob",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_action_item_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on action-item category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "action-item",
+        "inferred_value": "Do something",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_technology_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on technology category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "technology",
+        "inferred_value": "K8s",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_process_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on process category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "process",
+        "inferred_value": "Agile Scrum",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_product_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on product category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "product",
+        "inferred_value": "Widget Pro",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_cgkra_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on cgkra-kp category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "cgkra-kp",
+        "inferred_value": "Scaling writes",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_swot_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on swot-s category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "swot-s",
+        "inferred_value": "Strong culture",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_other_returns_422(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact on 'other' category raises MergeNotApplicableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "other",
+        "inferred_value": "Miscellaneous note",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(MergeNotApplicableError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_fact_not_pending(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """merge_fact on an already-accepted fact raises FactNotPendingError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    target = await person_repo.create(company_id=company.id, name="Merge Target")
+
+    facts = [LLMInferredFact(category="person", value="Already Accepted Person")]
+    await review_service.save_facts(source.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="person", limit=100, offset=0
+    )
+    fact = rows[0]
+
+    # Accept first
+    await review_service.accept_fact(str(company.id), str(fact.id))
+
+    # Now try to merge — should fail
+    with pytest.raises(FactNotPendingError):
+        await review_service.merge_fact(
+            str(company.id), str(fact.id), str(target.id)
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_fact_not_found(
+    db_session: AsyncSession, review_service: ReviewService,
+):
+    """merge_fact with nonexistent fact_id raises FactNotFoundError."""
+    company = await _make_company(db_session)
+
+    with pytest.raises(FactNotFoundError):
+        await review_service.merge_fact(
+            str(company.id), str(uuid4()), str(uuid4())
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_merge_fact_wrong_company(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """merge_fact with wrong company_id raises FactCompanyMismatchError."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Wrong Co Merge Person",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(FactCompanyMismatchError):
+        await review_service.merge_fact(
+            str(other_company.id), str(fact.id), str(uuid4())
+        )
+
+
+# ---------------------------------------------------------------------------
+# correct_fact tests (Unit 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_person_with_comma(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """correct_fact on person with comma parses name+title, creates new person."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Wrong Name",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), "Jane Smith, VP"
+    )
+
+    assert entity_id is not None
+    person = await person_repo.get_by_id(UUID(entity_id))
+    assert person is not None
+    assert person.name == "Jane Smith"
+    assert person.title == "VP"
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == "Jane Smith, VP"
+    assert updated.reviewed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_person_without_comma(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """correct_fact on person without comma creates person with name only."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Wrong Name Again",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), "Jane Smith"
+    )
+
+    person = await person_repo.get_by_id(UUID(entity_id))
+    assert person.name == "Jane Smith"
+    assert person.title is None
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == "Jane Smith"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_person_existing_name_creates_new(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """correct_fact on person with a name that already exists creates a second person.
+
+    correct does NOT dedup — it always creates a new row. If the investigator
+    wanted to link to the existing person, they should have used merge.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    existing_name = f"ExistingPerson-{uuid4().hex[:6]}"
+    existing = await person_repo.create(
+        company_id=company.id, name=existing_name, title="Original Title"
+    )
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Wrong Name",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), f"{existing_name}, New Title"
+    )
+
+    assert entity_id is not None
+    # The returned entity should be a NEW person, not the existing one
+    assert entity_id != str(existing.id)
+
+    new_person = await person_repo.get_by_id(UUID(entity_id))
+    assert new_person.name == existing_name
+    assert new_person.title == "New Title"
+
+    # Both persons should exist — no dedup
+    matches = await person_repo.get_by_name_iexact(company.id, existing_name)
+    assert len(matches) == 2
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_functional_area_creates_new(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, area_repo,
+):
+    """correct_fact on functional-area always creates new area (no dedup)."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    area_name = f"CorrectedArea-{uuid4().hex[:6]}"
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "functional-area",
+        "inferred_value": "Wrong Area Name",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), area_name
+    )
+
+    assert entity_id is not None
+    area = await area_repo.get_by_id(UUID(entity_id))
+    assert area is not None
+    assert area.name == area_name
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == area_name
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_functional_area_collision_raises_conflict(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, area_repo,
+):
+    """correct_fact on functional-area with colliding name raises AreaNameConflictError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    area_name = f"ExistingArea-{uuid4().hex[:6]}"
+
+    # Pre-create an area with the same name
+    await area_repo.create(company_id=company.id, name=area_name)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "functional-area",
+        "inferred_value": "Wrong Area",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(AreaNameConflictError):
+        await review_service.correct_fact(
+            str(company.id), str(fact.id), area_name
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_action_item(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, action_repo,
+):
+    """correct_fact on action-item creates new action item with corrected description."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "action-item",
+        "inferred_value": "Wrong description",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), "Migrate database to PostgreSQL 16"
+    )
+
+    assert entity_id is not None
+    action_item = await action_repo.get_by_id(UUID(entity_id))
+    assert action_item is not None
+    assert action_item.description == "Migrate database to PostgreSQL 16"
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == "Migrate database to PostgreSQL 16"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_relationship_valid(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo, relationship_repo,
+):
+    """correct_fact on relationship with 'Alice > Bob' parses and creates relationship."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    sub_name = f"CorrectSub-{uuid4().hex[:6]}"
+    mgr_name = f"CorrectMgr-{uuid4().hex[:6]}"
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "relationship",
+        "inferred_value": "Wrong Sub > Wrong Mgr",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), f"{sub_name} > {mgr_name}"
+    )
+
+    assert entity_id is not None
+
+    # Both persons should have been created (stub — no pre-existing)
+    subs = await person_repo.get_by_name_iexact(company.id, sub_name)
+    mgrs = await person_repo.get_by_name_iexact(company.id, mgr_name)
+    assert len(subs) == 1
+    assert len(mgrs) == 1
+    assert subs[0].reports_to_person_id == mgrs[0].id
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == f"{sub_name} > {mgr_name}"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_relationship_no_separator(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """correct_fact on relationship without '>' raises InvalidCorrectedValueError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "relationship",
+        "inferred_value": "Alice > Bob",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(InvalidCorrectedValueError):
+        await review_service.correct_fact(
+            str(company.id), str(fact.id), "Alice reports to Bob"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_technology(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """correct_fact on technology stores corrected_value, no entity, returns None."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "technology",
+        "inferred_value": "K8s",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), "Kubernetes"
+    )
+
+    assert entity_id is None
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == "Kubernetes"
+    assert updated.reviewed_at is not None
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_cgkra(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """correct_fact on cgkra-kp stores corrected_value, returns None."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "cgkra-kp",
+        "inferred_value": "Old KP",
+    }])
+    fact = rows[0]
+
+    entity_id = await review_service.correct_fact(
+        str(company.id), str(fact.id), "Scaling database writes efficiently"
+    )
+
+    assert entity_id is None
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"
+    assert updated.corrected_value == "Scaling database writes efficiently"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_fact_not_pending(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """correct_fact on a non-pending fact raises FactNotPendingError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [LLMInferredFact(category="technology", value="AlreadyAcceptedTech")]
+    await review_service.save_facts(source.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="technology", limit=100, offset=0
+    )
+    fact = rows[0]
+
+    await review_service.accept_fact(str(company.id), str(fact.id))
+
+    with pytest.raises(FactNotPendingError):
+        await review_service.correct_fact(
+            str(company.id), str(fact.id), "Corrected Value"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_fact_not_found(
+    db_session: AsyncSession, review_service: ReviewService,
+):
+    """correct_fact with nonexistent fact_id raises FactNotFoundError."""
+    company = await _make_company(db_session)
+
+    with pytest.raises(FactNotFoundError):
+        await review_service.correct_fact(
+            str(company.id), str(uuid4()), "Some Value"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_correct_fact_wrong_company(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """correct_fact with wrong company_id raises FactCompanyMismatchError."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "technology",
+        "inferred_value": "Wrong Co Tech",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(FactCompanyMismatchError):
+        await review_service.correct_fact(
+            str(other_company.id), str(fact.id), "Corrected"
+        )
+
+
+# ---------------------------------------------------------------------------
+# update_fact_value tests — UC 17 (Unit 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_accepted_fact(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """update_fact_value sets corrected_value on accepted fact, status stays accepted."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [LLMInferredFact(category="technology", value="OriginalTech")]
+    await review_service.save_facts(source.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="technology", limit=100, offset=0
+    )
+    fact = rows[0]
+
+    # Accept first
+    await review_service.accept_fact(str(company.id), str(fact.id))
+
+    # Now update the value
+    await review_service.update_fact_value(
+        str(company.id), str(fact.id), "UpdatedTech"
+    )
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "accepted"  # Status unchanged
+    assert updated.corrected_value == "UpdatedTech"
+    assert updated.inferred_value == "OriginalTech"  # Original preserved
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_corrected_fact(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """update_fact_value overwrites corrected_value on corrected fact, status stays corrected."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "technology",
+        "inferred_value": "WrongTech",
+    }])
+    fact = rows[0]
+
+    # Correct first
+    await review_service.correct_fact(
+        str(company.id), str(fact.id), "FirstCorrection"
+    )
+
+    # Now update the corrected value
+    await review_service.update_fact_value(
+        str(company.id), str(fact.id), "SecondCorrection"
+    )
+
+    updated = await fact_repo.get_by_id(fact.id)
+    assert updated.status == "corrected"  # Status unchanged
+    assert updated.corrected_value == "SecondCorrection"
+    assert updated.inferred_value == "WrongTech"  # Original preserved
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_pending_fact_rejected(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """update_fact_value on pending fact raises FactNotEditableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "technology",
+        "inferred_value": "PendingTech",
+    }])
+    fact = rows[0]
+
+    with pytest.raises(FactNotEditableError):
+        await review_service.update_fact_value(
+            str(company.id), str(fact.id), "Nope"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_dismissed_fact_rejected(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """update_fact_value on dismissed fact raises FactNotEditableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [LLMInferredFact(category="technology", value="DismissedTech")]
+    await review_service.save_facts(source.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="technology", limit=100, offset=0
+    )
+    fact = rows[0]
+
+    await review_service.dismiss_fact(str(company.id), str(fact.id))
+
+    with pytest.raises(FactNotEditableError):
+        await review_service.update_fact_value(
+            str(company.id), str(fact.id), "Nope"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_merged_fact_rejected(
+    db_session: AsyncSession, review_service: ReviewService,
+    fact_repo, person_repo,
+):
+    """update_fact_value on merged fact raises FactNotEditableError."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    target = await person_repo.create(company_id=company.id, name="Merge Target Person")
+
+    rows = await fact_repo.create_many([{
+        "source_id": source.id,
+        "company_id": company.id,
+        "category": "person",
+        "inferred_value": "Merged Person",
+    }])
+    fact = rows[0]
+
+    await review_service.merge_fact(
+        str(company.id), str(fact.id), str(target.id)
+    )
+
+    with pytest.raises(FactNotEditableError):
+        await review_service.update_fact_value(
+            str(company.id), str(fact.id), "Nope"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_not_found(
+    db_session: AsyncSession, review_service: ReviewService,
+):
+    """update_fact_value with nonexistent fact_id raises FactNotFoundError."""
+    company = await _make_company(db_session)
+
+    with pytest.raises(FactNotFoundError):
+        await review_service.update_fact_value(
+            str(company.id), str(uuid4()), "Value"
+        )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_fact_value_wrong_company(
+    db_session: AsyncSession, review_service: ReviewService, fact_repo,
+):
+    """update_fact_value with wrong company_id raises FactCompanyMismatchError."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [LLMInferredFact(category="technology", value="WrongCoUpdateTech")]
+    await review_service.save_facts(source.id, company.id, facts)
+    rows, _ = await fact_repo.list_by_company(
+        company.id, status="pending", category="technology", limit=100, offset=0
+    )
+    fact = rows[0]
+
+    # Accept first so it becomes editable
+    await review_service.accept_fact(str(company.id), str(fact.id))
+
+    with pytest.raises(FactCompanyMismatchError):
+        await review_service.update_fact_value(
+            str(other_company.id), str(fact.id), "Nope"
+        )

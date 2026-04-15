@@ -198,7 +198,7 @@ What the system must do.
       "func": "fn", "area": "fn", "team": "fn",      # functional area
       "tech": "t", "stack": "t",                     # technology
       "process": "proc", "how": "proc",              # process
-      "product": "prod",                                # product
+      "product": "prod", "prod": "prod",                  # product (prod self-mapping required per disposition table)
       # CGKRA categories — investigator-tagged; LLM organizes notes into these buckets
       "cs": "cs", "cur": "cs", "current": "cs",      # current state
       "gw": "gw", "well": "gw",                      # going well

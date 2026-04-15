@@ -15,12 +15,13 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from app.exceptions import PersonNotFoundError
+from app.exceptions import PersonCompanyMismatchError, PersonNotFoundError
 from app.models.base import Person
 from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.person_repository import PersonRepository
+from app.services.fuzzy_match import similarity_score
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,14 @@ class PersonService:
         If a person with the same name already exists (case-insensitive),
         reuses the existing row and back-fills title if the existing person
         has none and the fact provides one. Used by accept_fact.
+
+        **Spec departure (M3)**: §10.4 accept/person says "insert a new row
+        into persons" with merge as the linking mechanism. This method
+        deduplicates on accept instead, reusing an existing person when the
+        name matches case-insensitively. Rationale: without dedup, accepting
+        the same name twice creates orphaned duplicates that the investigator
+        must then manually merge. Dedup-on-accept treats an exact name match
+        as a clear duplicate; merge remains available for fuzzy/ambiguous cases.
         """
         name, title = self._parse_name_title(value)
 
@@ -117,17 +126,33 @@ class PersonService:
 
         Algorithm per §10.4:
           1. Case-insensitive exact match — if exactly one, use it.
-          2. Multiple matches — use first.
-          3. No match — create stub person (name only, title=null).
+          2. No match — create stub person (name only, title=null).
+          3. Multiple matches — use the highest fuzzy-score match.
         """
         matches = await self._person_repo.get_by_name_iexact(company_id, name)
-        if matches:
+        if not matches:
+            # Case 2: no match — create stub
+            person = await self._person_repo.create(
+                company_id=company_id, name=name
+            )
+            return person.id
+
+        if len(matches) == 1:
+            # Case 1: exactly one match
             return matches[0].id
 
-        person = await self._person_repo.create(
-            company_id=company_id, name=name
+        # Case 3: multiple matches — pick the highest fuzzy-score match.
+        # All matches are case-insensitive exact on name, so fuzzy scoring
+        # here is against the full person representation (name + title if
+        # available) to distinguish between duplicates.
+        best = max(
+            matches,
+            key=lambda p: similarity_score(
+                name,
+                f"{p.name}, {p.title}" if p.title else p.name,
+            ),
         )
-        return person.id
+        return best.id
 
     # ── List / Get ──────────────────────────────────────────────
 
@@ -147,8 +172,6 @@ class PersonService:
         if person is None:
             raise PersonNotFoundError(f"Person not found: {person_id}")
         if person.company_id != company_id:
-            from app.exceptions import PersonCompanyMismatchError
-
             raise PersonCompanyMismatchError(
                 f"Person {person_id} does not belong to company {company_id}"
             )
@@ -160,6 +183,21 @@ class PersonService:
             "primary_area_id": person.primary_area_id,
             "reports_to_person_id": person.reports_to_person_id,
         }
+
+    # ── Targeted field updates (available now) ────────────────────
+
+    async def update_reports_to(
+        self, person_id: UUID, manager_person_id: UUID | None
+    ) -> Person:
+        """Update the reports_to_person_id on a person.
+
+        Used by _accept_relationship to set the convenience denormalization
+        per §10.4 accept/relationship. Available immediately (unlike the
+        general update_person() which depends on Unit 5).
+        """
+        return await self._person_repo.update_reports_to(
+            person_id, manager_person_id
+        )
 
     # ── Update / Delete (stubs until Unit 5) ────────────────────
 
