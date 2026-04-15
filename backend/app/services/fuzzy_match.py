@@ -1,7 +1,12 @@
 """Fuzzy string similarity scoring.
 
-Provides a normalized similarity score (0.0–1.0) using the standard
-library's ``difflib.SequenceMatcher``.  No external dependencies.
+Provides a normalized character-level sequence similarity score (0.0–1.0)
+using the standard library's ``difflib.SequenceMatcher``.  No external
+dependencies.
+
+This is character-level matching (not token/word-level). It handles partial
+matches well (e.g., "Eng" vs "Engineering" ≈ 0.43) but does not resolve
+abbreviations or synonyms (e.g., "k8s" vs "Kubernetes" ≈ 0.31).
 
 Used by:
   - PersonService.resolve_person() — tiebreak when multiple name matches exist

@@ -207,24 +207,30 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 
 **Goal**: enhance `ReviewService.list_pending()` to return ranked disambiguation candidates for each fact. Add fuzzy similarity scoring.
 
+- [ ] **Audit pre-existing Phase 2 `list_pending` tests for `candidates == []` regressions** — before writing new tests, scan `test_review_service.py` and `test_api/test_pending.py` for any test that:
+  - seeds person rows **and** asserts `item["candidates"] == []` for a person fact, OR
+  - seeds functional-area rows **and** asserts `item["candidates"] == []` for a functional-area fact
+  - These tests will silently break once Unit 4 populates real candidates. For each identified case: if the fact category is `technology`, `action-item`, or other non-entity category, the `candidates == []` assertion remains correct and no change is needed. If the fact is `person` or `functional-area` and the test seeds matching entity rows, **update the assertion** to accept non-empty candidates (e.g., `assert isinstance(item["candidates"], list)`) or remove the seeds from that test. The existing `test_list_pending_candidates_empty` uses a `technology` fact — it remains correct unchanged.
 - [ ] Add a fuzzy similarity utility:
   - Create `backend/app/services/fuzzy_match.py`
-  - Implement `similarity_score(a: str, b: str) -> float` — normalized token-based similarity (0.0–1.0)
-  - **Implementation**: use `difflib.SequenceMatcher` from the standard library (no new dependencies). Normalize by lowercasing and stripping whitespace before comparison.
+  - Implement `similarity_score(a: str, b: str) -> float` — normalized character-level sequence similarity (0.0–1.0)
+  - **Implementation**: use `difflib.SequenceMatcher` from the standard library (no new dependencies). This is character-level sequence matching (not token/word-level). Normalize by lowercasing and stripping whitespace before comparison.
 - [ ] Extend repository methods for candidate retrieval:
   - `PersonRepository.list_by_company(company_id)` — already exists, returns all persons ordered by name
   - `FunctionalAreaRepository.list_by_company(company_id)` — already exists
 - [ ] Modify `ReviewService.list_pending()`:
   - After fetching each fact, compute candidates based on category:
-    - `person`: fetch all persons for the company via `person_service.list_people()`; score each against `fact.inferred_value` using `similarity_score(person.name, inferred_value)`; return sorted by score desc; each candidate: `{ "entity_id": str(person.id), "value": person.name, "similarity_score": float }`
+    - `person`: fetch all persons for the company via `person_service.list_people()`; **parse `inferred_value` on the first comma** to extract the name portion (consistent with how accept/correct parse person facts — `PersonService._parse_name_title()`); score each person against the **name portion** using `similarity_score(person.name, name_portion)`; return sorted by score desc; each candidate: `{ "entity_id": str(person.id), "value": person.name, "similarity_score": float }`
     - `functional-area`: fetch all areas via `functional_area_service.list_areas()`; score each against `fact.inferred_value` using `similarity_score(area.name, inferred_value)`; sort by score desc
-    - `relationship`: **polymorphic shape** — fetch all persons via `person_service.list_people()`; for each person, compute score against `subordinate` and `manager` fields (parsed from `inferred_value` which is stored as "sub > mgr"); return `{ "subordinate": [...candidates scored against sub name...], "manager": [...candidates scored against mgr name...] }` (object, not array — frontend must handle this type difference)
+    - `relationship`: **polymorphic shape** — fetch all persons via `person_service.list_people()`; parse `inferred_value` on `>` to extract subordinate and manager names; for each person, compute score against `subordinate` and `manager` fields separately; sort each sub-list by score desc; return `{ "subordinate": [...sorted desc...], "manager": [...sorted desc...] }` (object, not array — frontend must handle this type difference). **Malformed fallback**: if `inferred_value` lacks `>`, treat the full value as the subordinate name and use empty string for manager — `similarity_score(person.name, "")` returns `0.0` for every person, making all manager candidates tied at `0.0` with undefined order; the subordinate list is sorted normally by score desc
     - All other categories (`action-item`, `technology`, `process`, `product`, `cgkra-*`, `swot-*`, `other`): empty list — no entity disambiguation
-  - **Performance note**: candidate computation scans all entities per fact per page. For Phase 3's expected data volumes (small — single user, modest companies), this is acceptable. **Optimization**: cache the entity lists (persons, areas) per page request — fetch once at the start of `list_pending()`, then reuse for all facts on that page. This avoids N+1 queries (one per fact) while still being O(facts * entities) for scoring. Phase 5+ can add further caching or limit candidate lists if needed.
+  - **Performance note**: candidate computation scans all entities per fact per page. For Phase 3's expected data volumes (small — single user, modest companies), this is acceptable. **Optimization**: cache the entity lists (persons, areas) per page request — fetch once at the start of `list_pending()`, then reuse for all facts on that page. This avoids N+1 queries (one per fact) while still being O(facts * entities) for scoring. **Further optimization**: condition entity fetches on whether the page contains facts that need them — if a page has only technology/cgkra/swot facts, skip fetching persons and areas entirely. Acceptable to defer this to Phase 5+ if the unconditional approach is simpler. Phase 5+ can add further caching or limit candidate lists if needed.
+  - **Entity list return types**: `person_service.list_people()` returns `list[Person]` (ORM objects — access `.id`, `.name`, `.title`); `functional_area_service.list_areas()` returns `list[FunctionalArea]` (ORM objects — access `.id`, `.name`). Both are already implemented in Unit 1.
 - [ ] Update `PendingFactItem` schema in `backend/app/schemas/inferred_fact.py`:
-  - Define `CandidateItem(BaseModel)` — `entity_id: str`, `value: str`, `similarity_score: float`
+  - Define `CandidateItem(BaseModel)` — `entity_id: UUID`, `value: str`, `similarity_score: float` (UUID for consistency with all other entity ID fields in the codebase)
   - Define `RelationshipCandidates(BaseModel)` — `subordinate: list[CandidateItem]`, `manager: list[CandidateItem]`
-  - Change `PendingFactItem.candidates` type to `list[CandidateItem] | RelationshipCandidates` with default `[]`
+  - Change `PendingFactItem.candidates` type to `list[CandidateItem] | RelationshipCandidates` with default `[]`. **Note on relationship empty state**: for relationship facts, the service layer must always return a `RelationshipCandidates` object (even if both lists are empty: `{"subordinate": [], "manager": []}`), never a bare `[]`. The default `[]` only applies to non-relationship categories. Pydantic v2's smart union validation handles this correctly: an object with `subordinate`/`manager` keys matches `RelationshipCandidates`, a list matches `list[CandidateItem]`.
+  - **Pre-existing note**: `PendingFactItem` already has a `status: str` field (added in Phase 2). This field does not appear in the §10.4 response shape definition, which lists only `fact_id`, `category`, `inferred_value`, `source_id`, `source_excerpt`, `candidates`. The `status` field is a practical addition that lets the same endpoint serve both pending review and history queries (via the `?status=` query param). Unit 4 does not change this field — it is carried forward as-is.
 - [ ] Update frontend type in `frontend/src/types/index.ts`:
   - `CandidateItem = { entity_id: string; value: string; similarity_score: number }`
   - `RelationshipCandidates = { subordinate: CandidateItem[]; manager: CandidateItem[] }`
@@ -232,22 +238,37 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 - [ ] Write tests:
   - In `backend/tests/test_services/test_fuzzy_match.py` (new file):
     - `test_exact_match_score_1` — identical strings -> 1.0
-    - `test_no_overlap_score_0` — completely different strings -> ~0.0
-    - `test_partial_match` — "Eng" vs "Engineering" -> high score
+    - `test_no_overlap_score_0` — completely different strings (e.g., "aaa" vs "zzz") -> 0.0
+    - `test_partial_match` — "Eng" vs "Engineering" -> moderate score (SequenceMatcher ≈ 0.43; assert > 0.3, not > 0.5)
     - `test_case_insensitive` — "kubernetes" vs "Kubernetes" -> 1.0
-    - `test_abbreviation` — "k8s" vs "Kubernetes" -> low score (no magic, just sequence matching)
+    - `test_abbreviation` — "k8s" vs "Kubernetes" -> low score (SequenceMatcher ≈ 0.31; assert < 0.4 — character-level matching cannot infer abbreviation semantics)
+    - `test_empty_string_input` — `similarity_score("Alice", "")` -> `0.0`; `similarity_score("", "Alice")` -> `0.0`; `similarity_score("", "")` -> `1.0` (SequenceMatcher considers two empty strings identical). This exercises the malformed relationship fallback code path.
   - In `backend/tests/test_services/test_review_service.py`:
     - `test_list_pending_person_candidates` — person fact returns ranked person candidates
     - `test_list_pending_area_candidates` — area fact returns ranked area candidates
+    - `test_list_pending_area_candidates_sorted_desc` — two areas with different similarity scores against the inferred_value; assert `candidates[0].similarity_score >= candidates[1].similarity_score`
     - `test_list_pending_relationship_candidates` — relationship fact returns `{ subordinate: [...], manager: [...] }` structure (object, not array)
+    - `test_list_pending_relationship_candidates_sorted_desc` — two persons with different scores against sub name; assert `candidates["subordinate"][0].similarity_score >= candidates["subordinate"][1].similarity_score`; two persons with different scores against mgr name; assert `candidates["manager"][0].similarity_score >= candidates["manager"][1].similarity_score`
     - `test_list_pending_technology_no_candidates` — technology fact returns empty candidates
     - `test_list_pending_action_item_no_candidates` — action-item fact returns empty candidates (no disambiguation for action-items)
     - `test_list_pending_product_no_candidates` — product fact returns empty candidates
     - `test_list_pending_no_entities_empty_candidates` — no entities in company -> empty candidates list
+    - `test_list_pending_person_candidates_sorted_desc` — two persons with different similarity; assert candidates[0].similarity_score >= candidates[1].similarity_score
+    - `test_list_pending_candidates_cross_company_isolation` — persons in another company do NOT appear in candidates; only entities from the querying company
+    - `test_list_pending_relationship_empty_returns_object` — relationship fact with no persons returns `{"subordinate": [], "manager": []}` (object, not `[]`)
+    - `test_list_pending_relationship_malformed_value` — relationship fact with `inferred_value` lacking `>` → candidates still returned; assert subordinate list is non-empty (scored against full value); assert every manager candidate has `similarity_score == 0.0` (because `similarity_score(name, "")` always returns `0.0` — the order of manager candidates is undefined/implementation-defined, but all scores must be exactly `0.0`)
+    - `test_list_pending_cgkra_no_candidates` — cgkra-kp fact returns empty candidates
+    - `test_list_pending_swot_no_candidates` — swot-s fact returns empty candidates
+    - `test_list_pending_process_no_candidates` — process fact returns empty candidates
+    - `test_list_pending_entity_fetch_cached_per_page` — this test verifies that `person_service.list_people()` is called exactly once for a page containing 3 person facts, not 3 times. **Implementation**: this is an integration test (uses `db_session` and real DB writes). To count calls without switching to a pure unit test, wrap the service method with a spy: create a local `call_count = 0` counter and monkeypatch `person_service.list_people` with a wrapper that increments the counter and delegates to the original. After calling `review_service.list_pending()`, assert `call_count == 1`. The monkeypatch should be applied directly to the `person_service` instance that `review_service` holds (accessible as `review_service._person_service`). Use `try/finally` or pytest's `monkeypatch` fixture to restore the original after the test. **Do NOT use `unittest.mock.patch`** — patching module-level names does not work when the ReviewService already holds a reference to the PersonService instance.
+  - In `backend/tests/test_api/test_pending.py`:
+    - `test_list_pending_candidates_api_round_trip` — GET /companies/{id}/pending with a person fact and a seeded person: verify response JSON contains candidate with `entity_id` (valid UUID), `value` (str), `similarity_score` (float in [0.0, 1.0]); also seed a technology fact on the same page and verify its `candidates` is `[]`; also seed a relationship fact and verify its `candidates` is an object with `subordinate` and `manager` keys (not a list)
 
 **Why fourth**: disambiguation depends on the list_pending API already working (Phase 2) and domain services from Unit 1. It must be complete before the frontend can show candidate lists.
 
-**Rationale**: §10.4 specifies candidates as a ranked list of existing same-category entities ordered by fuzzy similarity. §6.1 calls out "k8s" -> "Kubernetes" and "Eng" -> "Engineering" as example scenarios. The spec does not mandate a specific fuzzy algorithm — `SequenceMatcher` provides reasonable results for this use case.
+**Rationale**: §10.4 specifies candidates as a ranked list of existing same-category entities ordered by fuzzy similarity. §6.1 mentions "k8s" → "Kubernetes" and "Eng" → "Engineering" as example scenarios, but §10.4 takes precedence for technology/process/product categories — no entity table exists for these, so disambiguation is not implementable. The k8s example is doubly moot: (1) technology gets empty candidates per §10.4, and (2) `SequenceMatcher` is character-level and scores "k8s" vs "kubernetes" at ≈ 0.31, insufficient for abbreviation expansion. A future phase could add synonym/abbreviation mapping if needed. The spec does not mandate a specific fuzzy algorithm — `SequenceMatcher` provides reasonable character-level results for name matching (people, functional areas).
+
+**§6.1 limitation note**: §6.1 says disambiguation "applies to all entity categories (people, technologies, functional areas, etc.)" but §10.4 explicitly states technology/process/product/cgkra/swot/other categories return empty candidate arrays. §10.4 is the authoritative endpoint specification per §16 conflict resolution. The §6.1 description is aspirational — it describes the general concept but §10.4 constrains the implementation to categories with entity tables.
 
 ---
 
