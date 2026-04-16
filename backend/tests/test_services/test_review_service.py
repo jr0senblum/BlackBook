@@ -2660,6 +2660,13 @@ async def test_list_pending_person_candidates(
         assert "value" in c
         assert "similarity_score" in c
         assert 0.0 <= c["similarity_score"] <= 1.0
+    # DECISION guard: name-portion parsing must produce a near-exact match.
+    # "Alice Smith, CTO" → name_portion = "Alice Smith"; scoring "Alice Smith"
+    # against "Alice Smith" → 1.0.  If parsing is broken and the full
+    # inferred_value is used instead, similarity_score("Alice Smith",
+    # "Alice Smith, CTO") ≈ 0.56 — this assertion would fail.
+    alice_candidate = next(c for c in candidates if str(c["entity_id"]) == str(person.id))
+    assert alice_candidate["similarity_score"] > 0.9
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -2964,7 +2971,6 @@ async def test_list_pending_relationship_malformed_value(
     string: every person scores exactly 0.0.
     """
     company = await _make_company(db_session)
-    source = await _make_source(db_session, company.id)
 
     person_repo = PersonRepository(db_session)
     await person_repo.create(company_id=company.id, name="Alice")
@@ -2972,15 +2978,13 @@ async def test_list_pending_relationship_malformed_value(
 
     # Seed fact directly so we bypass LLMInferredFact relationship validation
     from app.models.base import InferredFact
+    source = await _make_source(db_session, company.id)
     malformed = InferredFact(
-        source_id=None,
+        source_id=source.id,
         company_id=company.id,
         category="relationship",
         inferred_value="Alice reports to Bob",  # no '>'
     )
-    # Needs a source
-    source2 = await _make_source(db_session, company.id)
-    malformed.source_id = source2.id
     db_session.add(malformed)
     await db_session.flush()
     await db_session.refresh(malformed)
