@@ -311,7 +311,7 @@ async def test_list_pending_source_excerpt_fallback_no_source_line(
 async def test_list_pending_candidates_empty(
     db_session: AsyncSession, review_service: ReviewService
 ):
-    """In Phase 2, candidates is always an empty list."""
+    """Technology facts return empty candidates (no entity table for technology)."""
     company = await _make_company(db_session)
     source = await _make_source(db_session, company.id)
     facts = [LLMInferredFact(category="technology", value="Cand Tech")]
@@ -2622,3 +2622,430 @@ async def test_update_fact_value_wrong_company(
         await review_service.update_fact_value(
             str(other_company.id), str(fact.id), "Nope"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unit 4 — Disambiguation Candidates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_person_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Person fact returns a list of CandidateItem-dicts from same company persons."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    # Seed a person entity
+    person_repo = PersonRepository(db_session)
+    person = await person_repo.create(
+        company_id=company.id, name="Alice Smith", title="CTO"
+    )
+
+    facts = [LLMInferredFact(category="person", value="Alice Smith, CTO")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert len(items) == 1
+    candidates = items[0]["candidates"]
+    assert isinstance(candidates, list)
+    assert len(candidates) >= 1
+    # The seeded person should appear
+    entity_ids = [str(c["entity_id"]) for c in candidates]
+    assert str(person.id) in entity_ids
+    # Each candidate has the required shape
+    for c in candidates:
+        assert "entity_id" in c
+        assert "value" in c
+        assert "similarity_score" in c
+        assert 0.0 <= c["similarity_score"] <= 1.0
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_area_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Functional-area fact returns ranked area candidates."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    area_repo = FunctionalAreaRepository(db_session)
+    area = await area_repo.create(company_id=company.id, name="Engineering")
+
+    facts = [LLMInferredFact(category="functional-area", value="Engineering")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert len(items) == 1
+    candidates = items[0]["candidates"]
+    assert isinstance(candidates, list)
+    assert len(candidates) >= 1
+    entity_ids = [str(c["entity_id"]) for c in candidates]
+    assert str(area.id) in entity_ids
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_area_candidates_sorted_desc(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Area candidates are sorted by similarity_score descending."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    area_repo = FunctionalAreaRepository(db_session)
+    # "Engineering" will score higher against "Engineering" than "Sales" will
+    await area_repo.create(company_id=company.id, name="Engineering")
+    await area_repo.create(company_id=company.id, name="Sales")
+
+    facts = [LLMInferredFact(category="functional-area", value="Engineering")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    candidates = items[0]["candidates"]
+    assert len(candidates) >= 2
+    for i in range(len(candidates) - 1):
+        assert candidates[i]["similarity_score"] >= candidates[i + 1]["similarity_score"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_relationship_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Relationship fact returns a dict with 'subordinate' and 'manager' keys, not a list."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    await person_repo.create(company_id=company.id, name="Alice")
+    await person_repo.create(company_id=company.id, name="Bob")
+
+    facts = [
+        LLMInferredFact(
+            category="relationship",
+            value="Alice > Bob",
+            subordinate="Alice",
+            manager="Bob",
+        )
+    ]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert len(items) == 1
+    candidates = items[0]["candidates"]
+    assert isinstance(candidates, dict), "relationship candidates must be a dict, not a list"
+    assert "subordinate" in candidates
+    assert "manager" in candidates
+    assert isinstance(candidates["subordinate"], list)
+    assert isinstance(candidates["manager"], list)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_relationship_candidates_sorted_desc(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Both subordinate and manager sub-lists are sorted by score desc."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    # "Alice" scores higher against "Alice" than "Zephyr" does
+    await person_repo.create(company_id=company.id, name="Alice")
+    await person_repo.create(company_id=company.id, name="Zephyr")
+    # "Bob" scores higher against "Bob" than "Xanthe" does
+    await person_repo.create(company_id=company.id, name="Bob")
+    await person_repo.create(company_id=company.id, name="Xanthe")
+
+    facts = [
+        LLMInferredFact(
+            category="relationship",
+            value="Alice > Bob",
+            subordinate="Alice",
+            manager="Bob",
+        )
+    ]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    candidates = items[0]["candidates"]
+    sub_list = candidates["subordinate"]
+    mgr_list = candidates["manager"]
+
+    # Both sub-lists must be sorted desc
+    for lst in (sub_list, mgr_list):
+        assert len(lst) >= 2
+        for i in range(len(lst) - 1):
+            assert lst[i]["similarity_score"] >= lst[i + 1]["similarity_score"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_technology_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Technology fact returns empty candidates (no entity table)."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="technology", value="Docker")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_action_item_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Action-item fact returns empty candidates (no disambiguation for action-items)."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="action-item", value="Follow up with team")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_product_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Product fact returns empty candidates."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="product", value="WidgetPro")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_cgkra_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """cgkra-kp fact returns empty candidates."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="cgkra-kp", value="Key partnership with vendor")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_swot_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """swot-s fact returns empty candidates."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="swot-s", value="Strong brand recognition")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_process_no_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Process fact returns empty candidates."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="process", value="CI/CD pipeline")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_no_entities_empty_candidates(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Person fact with no persons in the company returns empty candidate list."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+    facts = [LLMInferredFact(category="person", value="Jane Doe, CTO")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    assert items[0]["candidates"] == []
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_person_candidates_sorted_desc(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Person candidates are sorted by similarity_score descending."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    # "Alice Smith" scores high against "Alice Smith"; "Zephyr Quux" scores low
+    await person_repo.create(company_id=company.id, name="Alice Smith")
+    await person_repo.create(company_id=company.id, name="Zephyr Quux")
+
+    facts = [LLMInferredFact(category="person", value="Alice Smith, CTO")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    candidates = items[0]["candidates"]
+    assert len(candidates) >= 2
+    for i in range(len(candidates) - 1):
+        assert candidates[i]["similarity_score"] >= candidates[i + 1]["similarity_score"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_candidates_cross_company_isolation(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Candidates only include entities from the querying company, not others."""
+    company = await _make_company(db_session)
+    other_company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    # Person in the target company
+    own_person = await person_repo.create(
+        company_id=company.id, name="Own Person"
+    )
+    # Person in a different company — must NOT appear in candidates
+    other_person = await person_repo.create(
+        company_id=other_company.id, name="Other Person"
+    )
+
+    facts = [LLMInferredFact(category="person", value="Own Person")]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    candidates = items[0]["candidates"]
+    entity_ids = [str(c["entity_id"]) for c in candidates]
+    assert str(own_person.id) in entity_ids
+    assert str(other_person.id) not in entity_ids
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_relationship_empty_returns_object(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Relationship fact with no persons returns empty-list object, not bare []."""
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    facts = [
+        LLMInferredFact(
+            category="relationship",
+            value="Alice > Bob",
+            subordinate="Alice",
+            manager="Bob",
+        )
+    ]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    candidates = items[0]["candidates"]
+    # Must be a dict (RelationshipCandidates), not a list
+    assert isinstance(candidates, dict)
+    assert candidates == {"subordinate": [], "manager": []}
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_relationship_malformed_value(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """Malformed relationship value (no '>') falls back gracefully.
+
+    Subordinate list is scored against the full inferred_value (non-empty
+    scores expected when persons exist).  Manager list scores against empty
+    string: every person scores exactly 0.0.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    await person_repo.create(company_id=company.id, name="Alice")
+    await person_repo.create(company_id=company.id, name="Bob")
+
+    # Seed fact directly so we bypass LLMInferredFact relationship validation
+    from app.models.base import InferredFact
+    malformed = InferredFact(
+        source_id=None,
+        company_id=company.id,
+        category="relationship",
+        inferred_value="Alice reports to Bob",  # no '>'
+    )
+    # Needs a source
+    source2 = await _make_source(db_session, company.id)
+    malformed.source_id = source2.id
+    db_session.add(malformed)
+    await db_session.flush()
+    await db_session.refresh(malformed)
+
+    items, _ = await review_service.list_pending(str(company.id))
+    # Find the malformed fact (most recently added)
+    rel_items = [i for i in items if i["category"] == "relationship"]
+    assert rel_items, "Expected at least one relationship fact"
+    candidates = rel_items[-1]["candidates"]
+
+    # Must be a dict with both keys
+    assert isinstance(candidates, dict)
+    sub_list = candidates["subordinate"]
+    mgr_list = candidates["manager"]
+
+    # Subordinate list: scored against full value — non-empty with persons seeded
+    assert len(sub_list) >= 1
+
+    # Manager list: all candidates score exactly 0.0 (similarity_score(name, "") == 0.0)
+    assert len(mgr_list) >= 1
+    for c in mgr_list:
+        assert c["similarity_score"] == 0.0
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_entity_fetch_cached_per_page(
+    db_session: AsyncSession, review_service: ReviewService
+) -> None:
+    """list_people() is called exactly once per page, not once per fact (N+1 guard).
+
+    Uses a spy wrapper applied to review_service._person_service so the
+    real integration path runs but call count is tracked.
+    """
+    company = await _make_company(db_session)
+    source = await _make_source(db_session, company.id)
+
+    person_repo = PersonRepository(db_session)
+    await person_repo.create(company_id=company.id, name="Spy Person")
+
+    # Three person facts on the same page
+    facts = [
+        LLMInferredFact(category="person", value=f"Spy Person {i}, Title")
+        for i in range(3)
+    ]
+    await review_service.save_facts(source.id, company.id, facts)
+
+    # Spy: wrap list_people to count calls
+    call_count = 0
+    original_list_people = review_service._person_service.list_people
+
+    async def spy_list_people(cid):
+        nonlocal call_count
+        call_count += 1
+        return await original_list_people(cid)
+
+    review_service._person_service.list_people = spy_list_people
+    try:
+        items, _ = await review_service.list_pending(str(company.id))
+    finally:
+        review_service._person_service.list_people = original_list_people
+
+    # Must have been called exactly once (cached per page, not per fact)
+    assert call_count == 1
+    # Sanity: all three facts returned with candidate lists
+    person_items = [i for i in items if i["category"] == "person"]
+    assert len(person_items) == 3
+    for item in person_items:
+        assert isinstance(item["candidates"], list)

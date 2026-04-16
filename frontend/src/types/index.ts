@@ -103,6 +103,17 @@ export interface SourceStatusResponse {
 
 // ── Pending Review ──────────────────────────────────────────────
 
+export interface CandidateItem {
+  entity_id: string;
+  value: string;
+  similarity_score: number;
+}
+
+export interface RelationshipCandidates {
+  subordinate: CandidateItem[];
+  manager: CandidateItem[];
+}
+
 export interface PendingFactItem {
   fact_id: string;
   category: string;
@@ -110,7 +121,7 @@ export interface PendingFactItem {
   status: string;
   source_id: string;
   source_excerpt: string;
-  candidates: unknown[];
+  candidates: CandidateItem[] | RelationshipCandidates;
 }
 
 export interface PendingFactListResponse {

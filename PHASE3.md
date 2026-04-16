@@ -203,22 +203,22 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 
 ---
 
-## Unit 4: Disambiguation Candidates (Fuzzy Matching)
+## Unit 4: Disambiguation Candidates (Fuzzy Matching) — COMPLETE ✅
 
 **Goal**: enhance `ReviewService.list_pending()` to return ranked disambiguation candidates for each fact. Add fuzzy similarity scoring.
 
-- [ ] **Audit pre-existing Phase 2 `list_pending` tests for `candidates == []` regressions** — before writing new tests, scan `test_review_service.py` and `test_api/test_pending.py` for any test that:
+- [x] **Audit pre-existing Phase 2 `list_pending` tests for `candidates == []` regressions** — before writing new tests, scan `test_review_service.py` and `test_api/test_pending.py` for any test that:
   - seeds person rows **and** asserts `item["candidates"] == []` for a person fact, OR
   - seeds functional-area rows **and** asserts `item["candidates"] == []` for a functional-area fact
   - These tests will silently break once Unit 4 populates real candidates. For each identified case: if the fact category is `technology`, `action-item`, or other non-entity category, the `candidates == []` assertion remains correct and no change is needed. If the fact is `person` or `functional-area` and the test seeds matching entity rows, **update the assertion** to accept non-empty candidates (e.g., `assert isinstance(item["candidates"], list)`) or remove the seeds from that test. The existing `test_list_pending_candidates_empty` uses a `technology` fact — it remains correct unchanged.
-- [ ] Add a fuzzy similarity utility:
+- [x] Add a fuzzy similarity utility:
   - Create `backend/app/services/fuzzy_match.py`
   - Implement `similarity_score(a: str, b: str) -> float` — normalized character-level sequence similarity (0.0–1.0)
   - **Implementation**: use `difflib.SequenceMatcher` from the standard library (no new dependencies). This is character-level sequence matching (not token/word-level). Normalize by lowercasing and stripping whitespace before comparison.
-- [ ] Extend repository methods for candidate retrieval:
+- [x] Extend repository methods for candidate retrieval:
   - `PersonRepository.list_by_company(company_id)` — already exists, returns all persons ordered by name
   - `FunctionalAreaRepository.list_by_company(company_id)` — already exists
-- [ ] Modify `ReviewService.list_pending()`:
+- [x] Modify `ReviewService.list_pending()`:
   - After fetching each fact, compute candidates based on category:
     - `person`: fetch all persons for the company via `person_service.list_people()`; **parse `inferred_value` on the first comma** to extract the name portion (consistent with how accept/correct parse person facts — `PersonService._parse_name_title()`); score each person against the **name portion** using `similarity_score(person.name, name_portion)`; return sorted by score desc; each candidate: `{ "entity_id": str(person.id), "value": person.name, "similarity_score": float }`
     - `functional-area`: fetch all areas via `functional_area_service.list_areas()`; score each against `fact.inferred_value` using `similarity_score(area.name, inferred_value)`; sort by score desc
@@ -226,16 +226,16 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - All other categories (`action-item`, `technology`, `process`, `product`, `cgkra-*`, `swot-*`, `other`): empty list — no entity disambiguation
   - **Performance note**: candidate computation scans all entities per fact per page. For Phase 3's expected data volumes (small — single user, modest companies), this is acceptable. **Optimization**: cache the entity lists (persons, areas) per page request — fetch once at the start of `list_pending()`, then reuse for all facts on that page. This avoids N+1 queries (one per fact) while still being O(facts * entities) for scoring. **Further optimization**: condition entity fetches on whether the page contains facts that need them — if a page has only technology/cgkra/swot facts, skip fetching persons and areas entirely. Acceptable to defer this to Phase 5+ if the unconditional approach is simpler. Phase 5+ can add further caching or limit candidate lists if needed.
   - **Entity list return types**: `person_service.list_people()` returns `list[Person]` (ORM objects — access `.id`, `.name`, `.title`); `functional_area_service.list_areas()` returns `list[FunctionalArea]` (ORM objects — access `.id`, `.name`). Both are already implemented in Unit 1.
-- [ ] Update `PendingFactItem` schema in `backend/app/schemas/inferred_fact.py`:
+- [x] Update `PendingFactItem` schema in `backend/app/schemas/inferred_fact.py`:
   - Define `CandidateItem(BaseModel)` — `entity_id: UUID`, `value: str`, `similarity_score: float` (UUID for consistency with all other entity ID fields in the codebase)
   - Define `RelationshipCandidates(BaseModel)` — `subordinate: list[CandidateItem]`, `manager: list[CandidateItem]`
   - Change `PendingFactItem.candidates` type to `list[CandidateItem] | RelationshipCandidates` with default `[]`. **Note on relationship empty state**: for relationship facts, the service layer must always return a `RelationshipCandidates` object (even if both lists are empty: `{"subordinate": [], "manager": []}`), never a bare `[]`. The default `[]` only applies to non-relationship categories. Pydantic v2's smart union validation handles this correctly: an object with `subordinate`/`manager` keys matches `RelationshipCandidates`, a list matches `list[CandidateItem]`.
   - **Pre-existing note**: `PendingFactItem` already has a `status: str` field (added in Phase 2). This field does not appear in the §10.4 response shape definition, which lists only `fact_id`, `category`, `inferred_value`, `source_id`, `source_excerpt`, `candidates`. The `status` field is a practical addition that lets the same endpoint serve both pending review and history queries (via the `?status=` query param). Unit 4 does not change this field — it is carried forward as-is.
-- [ ] Update frontend type in `frontend/src/types/index.ts`:
+- [x] Update frontend type in `frontend/src/types/index.ts`:
   - `CandidateItem = { entity_id: string; value: string; similarity_score: number }`
   - `RelationshipCandidates = { subordinate: CandidateItem[]; manager: CandidateItem[] }`
   - Update `PendingFactItem.candidates` type to `CandidateItem[] | RelationshipCandidates`
-- [ ] Write tests:
+- [x] Write tests:
   - In `backend/tests/test_services/test_fuzzy_match.py` (new file):
     - `test_exact_match_score_1` — identical strings -> 1.0
     - `test_no_overlap_score_0` — completely different strings (e.g., "aaa" vs "zzz") -> 0.0
@@ -263,6 +263,8 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
     - `test_list_pending_entity_fetch_cached_per_page` — this test verifies that `person_service.list_people()` is called exactly once for a page containing 3 person facts, not 3 times. **Implementation**: this is an integration test (uses `db_session` and real DB writes). To count calls without switching to a pure unit test, wrap the service method with a spy: create a local `call_count = 0` counter and monkeypatch `person_service.list_people` with a wrapper that increments the counter and delegates to the original. After calling `review_service.list_pending()`, assert `call_count == 1`. The monkeypatch should be applied directly to the `person_service` instance that `review_service` holds (accessible as `review_service._person_service`). Use `try/finally` or pytest's `monkeypatch` fixture to restore the original after the test. **Do NOT use `unittest.mock.patch`** — patching module-level names does not work when the ReviewService already holds a reference to the PersonService instance.
   - In `backend/tests/test_api/test_pending.py`:
     - `test_list_pending_candidates_api_round_trip` — GET /companies/{id}/pending with a person fact and a seeded person: verify response JSON contains candidate with `entity_id` (valid UUID), `value` (str), `similarity_score` (float in [0.0, 1.0]); also seed a technology fact on the same page and verify its `candidates` is `[]`; also seed a relationship fact and verify its `candidates` is an object with `subordinate` and `manager` keys (not a list)
+
+**548 tests passing at end of this phase.**
 
 **Why fourth**: disambiguation depends on the list_pending API already working (Phase 2) and domain services from Unit 1. It must be complete before the frontend can show candidate lists.
 

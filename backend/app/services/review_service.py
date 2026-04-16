@@ -37,6 +37,7 @@ from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.inferred_fact_repository import InferredFactRepository
 from app.repositories.relationship_repository import RelationshipRepository
 from app.repositories.source_repository import SourceRepository
+from app.services.fuzzy_match import similarity_score
 from app.services.prefix_parser_service import ParsedLine
 
 if TYPE_CHECKING:
@@ -197,7 +198,20 @@ class ReviewService:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Return paginated facts with source excerpts.
+        """Return paginated facts with source excerpts and disambiguation candidates.
+
+        Candidates are computed per §10.4 / §6.1:
+          - person: ranked list of same-company persons scored against the name
+            portion of the inferred_value (split on first comma).
+          - functional-area: ranked list of same-company areas scored against
+            the full inferred_value.
+          - relationship: RelationshipCandidates object with 'subordinate' and
+            'manager' sub-lists, each scored and sorted desc.
+          - all other categories: empty list (no entity table to score against).
+
+        Entity lists are fetched once per page (not once per fact) to avoid
+        N+1 queries.  If no facts on the page need persons or areas, the
+        corresponding fetch is skipped entirely.
 
         Returns a tuple of (items, total) where each item is a dict suitable
         for constructing a PendingFactItem schema.
@@ -209,6 +223,22 @@ class ReviewService:
             category=category,
             limit=limit,
             offset=offset,
+        )
+
+        # --- Cache entity lists for the page (avoid N+1 queries) ---
+        # Determine which entity types are needed before fetching.
+        needs_persons = any(
+            f.category in ("person", "relationship") for f in facts
+        )
+        needs_areas = any(f.category == "functional-area" for f in facts)
+
+        persons = (
+            await self._person_service.list_people(cid) if needs_persons else []
+        )
+        areas = (
+            await self._functional_area_service.list_areas(cid)
+            if needs_areas
+            else []
         )
 
         items: list[dict[str, Any]] = []
@@ -225,6 +255,10 @@ class ReviewService:
                 else:
                     source_excerpt = ""
 
+            candidates: list[dict[str, Any]] | dict[str, Any] = (
+                self._compute_candidates(fact.category, fact.inferred_value, persons, areas)
+            )
+
             items.append({
                 "fact_id": fact.id,
                 "category": fact.category,
@@ -232,10 +266,91 @@ class ReviewService:
                 "status": fact.status,
                 "source_id": fact.source_id,
                 "source_excerpt": source_excerpt,
-                "candidates": [],  # Phase 2: always empty; Phase 3 Unit 4 adds disambiguation
+                "candidates": candidates,
             })
 
         return items, total
+
+    @staticmethod
+    def _compute_candidates(
+        category: str,
+        inferred_value: str,
+        persons: list[Any],
+        areas: list[Any],
+    ) -> list[dict[str, Any]] | dict[str, Any]:
+        """Compute disambiguation candidates for a single fact.
+
+        Returns a list[CandidateItem-dict] for person/functional-area,
+        a RelationshipCandidates-dict for relationship, or [] for all others.
+        """
+        if category == "person":
+            # Parse name portion from "Name, Title" format (split on first comma).
+            name_portion = (
+                inferred_value.split(",", 1)[0].strip()
+                if "," in inferred_value
+                else inferred_value.strip()
+            )
+            scored = [
+                {
+                    "entity_id": p.id,
+                    "value": p.name,
+                    "similarity_score": similarity_score(p.name, name_portion),
+                }
+                for p in persons
+            ]
+            scored.sort(key=lambda c: c["similarity_score"], reverse=True)
+            return scored
+
+        if category == "functional-area":
+            scored = [
+                {
+                    "entity_id": a.id,
+                    "value": a.name,
+                    "similarity_score": similarity_score(a.name, inferred_value),
+                }
+                for a in areas
+            ]
+            scored.sort(key=lambda c: c["similarity_score"], reverse=True)
+            return scored
+
+        if category == "relationship":
+            # Parse "subordinate > manager"; fallback: full value = sub, "" = mgr.
+            if ">" in inferred_value:
+                parts = inferred_value.split(">", 1)
+                sub_name = parts[0].strip()
+                mgr_name = parts[1].strip()
+            else:
+                sub_name = inferred_value.strip()
+                mgr_name = ""
+
+            sub_candidates = [
+                {
+                    "entity_id": p.id,
+                    "value": p.name,
+                    "similarity_score": similarity_score(p.name, sub_name),
+                }
+                for p in persons
+            ]
+            sub_candidates.sort(
+                key=lambda c: c["similarity_score"], reverse=True
+            )
+
+            mgr_candidates = [
+                {
+                    "entity_id": p.id,
+                    "value": p.name,
+                    "similarity_score": similarity_score(p.name, mgr_name),
+                }
+                for p in persons
+            ]
+            mgr_candidates.sort(
+                key=lambda c: c["similarity_score"], reverse=True
+            )
+
+            return {"subordinate": sub_candidates, "manager": mgr_candidates}
+
+        # All other categories: no entity table → empty candidates.
+        return []
 
     # ── Accept a pending fact ────────────────────────────────────
 

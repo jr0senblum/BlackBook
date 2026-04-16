@@ -889,3 +889,71 @@ async def test_correct_unauthenticated(client: AsyncClient) -> None:
         assert response.status_code == 401
     finally:
         await _ensure_authenticated(client)
+
+
+# ═════════════════════════════════════════════════════════════════
+# Unit 4 — Disambiguation candidates API round-trip
+# ═════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_list_pending_candidates_api_round_trip(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """GET /companies/{id}/pending returns correctly shaped candidates.
+
+    Verifies:
+    - person fact with a seeded person: candidates is a list with at least
+      one item having entity_id (UUID), value (str), similarity_score (float
+      in [0.0, 1.0]).
+    - technology fact on the same page: candidates is [].
+    - relationship fact on the same page: candidates is a dict with
+      'subordinate' and 'manager' keys (not a list).
+    """
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+
+    # Seed a person entity directly
+    person_id = await _seed_person(db_session, company_id, name="Round Trip Person")
+
+    # Seed three facts: person, technology, relationship
+    await _seed_facts(db_session, company_id, [
+        {"category": "person", "value": "Round Trip Person, VP"},
+        {"category": "technology", "value": "Some Technology"},
+        {"category": "relationship", "value": "Round Trip Person > Unknown Manager"},
+    ])
+
+    response = await client.get(f"/api/v1/companies/{company_id}/pending")
+    assert response.status_code == 200
+    data = response.json()
+    items = data["items"]
+    assert len(items) == 3
+
+    by_category = {item["category"]: item for item in items}
+
+    # --- Person fact candidates ---
+    person_item = by_category["person"]
+    assert isinstance(person_item["candidates"], list)
+    assert len(person_item["candidates"]) >= 1
+    for c in person_item["candidates"]:
+        # entity_id must be a valid UUID string
+        UUID(c["entity_id"])
+        assert isinstance(c["value"], str)
+        assert isinstance(c["similarity_score"], float)
+        assert 0.0 <= c["similarity_score"] <= 1.0
+    # The seeded person must appear
+    candidate_ids = [c["entity_id"] for c in person_item["candidates"]]
+    assert str(person_id) in candidate_ids
+
+    # --- Technology fact candidates ---
+    tech_item = by_category["technology"]
+    assert tech_item["candidates"] == []
+
+    # --- Relationship fact candidates ---
+    rel_item = by_category["relationship"]
+    rel_cands = rel_item["candidates"]
+    assert isinstance(rel_cands, dict), "relationship candidates must be a dict"
+    assert "subordinate" in rel_cands
+    assert "manager" in rel_cands
+    assert isinstance(rel_cands["subordinate"], list)
+    assert isinstance(rel_cands["manager"], list)

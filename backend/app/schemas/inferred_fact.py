@@ -1,9 +1,9 @@
 """Pydantic schemas for inferred facts — LLM output model and review endpoints."""
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Valid categories from §6.3 / §11.5 CHECK constraint.
 VALID_CATEGORIES = frozenset({
@@ -67,6 +67,25 @@ class LLMInferredFact(BaseModel):
         return self
 
 
+class CandidateItem(BaseModel):
+    """A single disambiguation candidate for a person or functional-area fact."""
+
+    entity_id: UUID
+    value: str
+    similarity_score: float
+
+
+class RelationshipCandidates(BaseModel):
+    """Polymorphic candidates for a relationship fact.
+
+    Contains separate ranked sub-lists for the subordinate and manager roles.
+    Each sub-list is sorted by similarity_score descending.
+    """
+
+    subordinate: list[CandidateItem]
+    manager: list[CandidateItem]
+
+
 class PendingFactItem(BaseModel):
     """Single item in the pending review list."""
 
@@ -76,7 +95,12 @@ class PendingFactItem(BaseModel):
     status: str
     source_id: UUID
     source_excerpt: str
-    candidates: list = []
+    # For person/functional-area: list[CandidateItem] sorted by score desc.
+    # For relationship: RelationshipCandidates object with subordinate/manager sub-lists.
+    # For all other categories: empty list.
+    # Pydantic v2 smart union: a dict with subordinate/manager keys matches
+    # RelationshipCandidates; a list matches list[CandidateItem].
+    candidates: list[CandidateItem] | RelationshipCandidates = Field(default_factory=list)
 
 
 class PendingFactListResponse(BaseModel):
