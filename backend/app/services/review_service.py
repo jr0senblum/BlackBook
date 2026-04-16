@@ -213,6 +213,14 @@ class ReviewService:
         N+1 queries.  If no facts on the page need persons or areas, the
         corresponding fetch is skipped entirely.
 
+        # NOTE: candidates are computed for all returned facts regardless of
+        # status.  When ?status=accepted/corrected/merged/dismissed is used,
+        # the candidates are semantically useless (the fact has already been
+        # reviewed), but the cost is negligible at Phase 3 volumes and keeping
+        # the code path uniform avoids a conditional branch.  If Phase 5+
+        # adds high-volume history queries this should be conditioned on
+        # status == "pending".
+
         Returns a tuple of (items, total) where each item is a dict suitable
         for constructing a PendingFactItem schema.
         """
@@ -284,7 +292,15 @@ class ReviewService:
         a RelationshipCandidates-dict for relationship, or [] for all others.
         """
         if category == "person":
-            # Parse name portion from "Name, Title" format (split on first comma).
+            # DECISION: score against the name portion only, not the full
+            # inferred_value.  §10.4 says "ordered by fuzzy similarity score
+            # against inferred_value", but person facts are stored as
+            # "Name, Title" (e.g., "Jane Smith, VP Engineering").  Scoring the
+            # full string against an existing person's bare name ("Jane Smith")
+            # would yield a low match (≈ 0.56) where an exact match (1.0) is
+            # correct.  Splitting on the first comma extracts the name portion
+            # before scoring, consistent with how accept_fact and correct_fact
+            # parse person facts via PersonService._parse_name_title().
             name_portion = (
                 inferred_value.split(",", 1)[0].strip()
                 if "," in inferred_value
