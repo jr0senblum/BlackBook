@@ -160,6 +160,22 @@ class AreaCompanyMismatchError(DomainError):
     message = "Functional area does not belong to this company"
 
 
+class InvalidFKError(DomainError):
+    """A FK field references a non-existent entity.
+
+    Note: §10 does not define an explicit error code for FK violations.
+    Using 422 (Unprocessable Entity) with code "invalid_fk" — the request is
+    syntactically valid but semantically invalid because the referenced entity
+    does not exist for this company.  This matches the convention used by
+    validation_error (422) but is scoped to cross-entity reference failures
+    to distinguish them from field format errors caught by Pydantic.
+    """
+
+    code = "invalid_fk"
+    status_code = 422
+    message = "A referenced entity (FK) does not exist"
+
+
 class AreaNameConflictError(DomainError):
     code = "area_name_conflict"
     status_code = 409

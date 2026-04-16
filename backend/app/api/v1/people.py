@@ -2,12 +2,9 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError
+from fastapi import APIRouter, Depends
 
-from app.dependencies import get_current_session, get_person_service
-from app.exceptions import PersonCompanyMismatchError, PersonNotFoundError
-from app.repositories.functional_area_repository import FunctionalAreaRepository
+from app.dependencies import get_current_session, get_functional_area_service, get_person_service
 from app.schemas.person import (
     ActionItemSummary,
     LinkedFactSummary,
@@ -18,6 +15,7 @@ from app.schemas.person import (
     PersonCreateInput,
     PersonUpdateInput,
 )
+from app.services.functional_area_service import FunctionalAreaService
 from app.services.person_service import PersonService
 
 router = APIRouter(
@@ -69,16 +67,16 @@ def _build_detail(detail_dict: dict) -> PersonDetail:
 async def list_people(
     company_id: UUID,
     person_service: PersonService = Depends(get_person_service),
+    functional_area_service: FunctionalAreaService = Depends(get_functional_area_service),
     _session: str = Depends(get_current_session),
 ) -> PersonListResponse:
     """List all people for a company."""
     persons = await person_service.list_people(company_id)
 
-    # Build area name map for the company to annotate each person without
-    # N+1 queries.  We reach through the person_service's functional_area_repo
-    # which is already constructed for this request.
-    area_repo: FunctionalAreaRepository = person_service._functional_area_repo
-    areas = await area_repo.list_by_company(company_id)
+    # Fetch all areas for the company once to build a name map, avoiding N+1.
+    # Uses the public FunctionalAreaService API rather than reaching into
+    # PersonService internals.
+    areas = await functional_area_service.list_areas(company_id)
     area_name_map: dict[UUID, str] = {a.id: a.name for a in areas}
 
     items = [
@@ -105,28 +103,21 @@ async def create_person(
     person_service: PersonService = Depends(get_person_service),
     _session: str = Depends(get_current_session),
 ) -> PersonCreatedResponse:
-    """Create a new person for a company."""
-    try:
-        person = await person_service.create_person(
-            company_id,
-            name=body.name,
-            title=body.title,
-            primary_area_id=body.primary_area_id,
-            reports_to_person_id=body.reports_to_person_id,
-        )
-    except IntegrityError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": {
-                    "code": "invalid_fk",
-                    "message": (
-                        "primary_area_id or reports_to_person_id references "
-                        "a non-existent entity"
-                    ),
-                }
-            },
-        ) from exc
+    """Create a new person for a company.
+
+    Returns 422 with code "invalid_fk" if primary_area_id or
+    reports_to_person_id references a non-existent entity.
+    The InvalidFKError domain exception is raised by PersonService and
+    handled by the global DomainError handler in main.py, which produces
+    the correct top-level {"error": {...}} envelope.
+    """
+    person = await person_service.create_person(
+        company_id,
+        name=body.name,
+        title=body.title,
+        primary_area_id=body.primary_area_id,
+        reports_to_person_id=body.reports_to_person_id,
+    )
     return PersonCreatedResponse(person_id=person.id, name=person.name)
 
 
@@ -150,7 +141,11 @@ async def update_person(
     person_service: PersonService = Depends(get_person_service),
     _session: str = Depends(get_current_session),
 ) -> PersonDetail:
-    """Update person fields.  Returns the full updated PersonDetail."""
+    """Update person fields.  Returns the full updated PersonDetail.
+
+    Returns 422 with code "invalid_fk" if primary_area_id or
+    reports_to_person_id references a non-existent entity.
+    """
     # Only forward fields the client explicitly included in the JSON body.
     fields = body.model_dump(include=body.model_fields_set)
     await person_service.update_person(company_id, person_id, **fields)

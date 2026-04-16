@@ -267,7 +267,7 @@ async def test_create_person_empty_name(
 async def test_create_person_invalid_area_id(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
-    """POST with a non-existent primary_area_id returns 422."""
+    """POST with a non-existent primary_area_id returns 422 with correct envelope."""
     await _ensure_authenticated(client)
     company_id = await _create_company(client)
 
@@ -276,6 +276,10 @@ async def test_create_person_invalid_area_id(
         json={"name": "Henry", "primary_area_id": str(uuid4())},
     )
     assert response.status_code == 422
+    # Must use top-level {"error": {...}} envelope — NOT FastAPI's {"detail": ...}
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["code"] == "invalid_fk"
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +507,25 @@ async def test_update_person_not_found(
         json={"name": "Ghost"},
     )
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_update_person_invalid_area_id(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """PUT with a non-existent primary_area_id returns 422 with correct envelope."""
+    await _ensure_authenticated(client)
+    company_id = await _create_company(client)
+    person_id = await _seed_person(db_session, company_id, "UpdateFKTest")
+
+    response = await client.put(
+        f"/api/v1/companies/{company_id}/people/{person_id}",
+        json={"primary_area_id": str(uuid4())},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    assert "error" in body
+    assert body["error"]["code"] == "invalid_fk"
 
 
 # ---------------------------------------------------------------------------

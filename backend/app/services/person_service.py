@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from app.exceptions import PersonCompanyMismatchError, PersonNotFoundError
+from sqlalchemy.exc import IntegrityError
+
+from app.exceptions import InvalidFKError, PersonCompanyMismatchError, PersonNotFoundError
 from app.models.base import Person
 from app.repositories.action_item_repository import ActionItemRepository
 from app.repositories.functional_area_repository import FunctionalAreaRepository
@@ -65,14 +67,24 @@ class PersonService:
         primary_area_id: UUID | None = None,
         reports_to_person_id: UUID | None = None,
     ) -> Person:
-        """Insert a new person row."""
-        return await self._person_repo.create(
-            company_id=company_id,
-            name=name,
-            title=title,
-            primary_area_id=primary_area_id,
-            reports_to_person_id=reports_to_person_id,
-        )
+        """Insert a new person row.
+
+        Raises InvalidFKError (422) if primary_area_id or reports_to_person_id
+        references a non-existent entity (FK constraint violation).
+        """
+        try:
+            return await self._person_repo.create(
+                company_id=company_id,
+                name=name,
+                title=title,
+                primary_area_id=primary_area_id,
+                reports_to_person_id=reports_to_person_id,
+            )
+        except IntegrityError as exc:
+            raise InvalidFKError(
+                "primary_area_id or reports_to_person_id references "
+                "a non-existent entity"
+            ) from exc
 
     async def create_person_from_value(
         self, company_id: UUID, value: str
@@ -197,7 +209,15 @@ class PersonService:
         # Enrich: action items
         action_items = await self._action_item_repo.list_by_person(person.id)
 
-        # Enrich: linked inferred facts (name-matched + area-tagged)
+        # DECISION: §10.5 specifies "inferred_facts contains accepted and corrected
+        # facts linked to this person's primary functional area via functional_area_id."
+        # list_linked_to_person also includes facts where inferred_value ILIKE
+        # '%person.name%' (category='person'), extending beyond the spec.
+        # Rationale: without this, the investigator visiting a person detail page
+        # would not see the original fact(s) that sourced this person — the primary
+        # purpose of the person record.  The extension is additive (area facts still
+        # appear), does not change area-linked behavior, and has no downstream
+        # consequences beyond showing more facts per detail view.
         inferred_facts = await self._inferred_fact_repo.list_linked_to_person(
             company_id=company_id,
             person_id=person.id,
@@ -249,7 +269,13 @@ class PersonService:
             raise PersonCompanyMismatchError(
                 f"Person {person_id} does not belong to company {company_id}"
             )
-        return await self._person_repo.update(person_id, **fields)
+        try:
+            return await self._person_repo.update(person_id, **fields)
+        except IntegrityError as exc:
+            raise InvalidFKError(
+                "primary_area_id or reports_to_person_id references "
+                "a non-existent entity"
+            ) from exc
 
     async def delete_person(
         self, company_id: UUID, person_id: UUID
