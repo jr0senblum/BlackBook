@@ -276,52 +276,83 @@ Reference: REQUIREMENTS.md §5 (UCs 5–6, 17), §6.1 (entity disambiguation), �
 
 ## Unit 5: People CRUD API Endpoints
 
-**Goal**: implement the full people REST API from §10.5 — list, create, get detail (with action items and inferred facts), update, and delete. The service methods were created in Unit 1; this unit adds the route handlers, schemas, and tests.
+**Goal**: implement the full people REST API from §10.5 — list, create, get detail (with action items and inferred facts), update, and delete. The service stubs created in Unit 1 are completed here.
 
 - [ ] Extend `PersonRepository` in `backend/app/repositories/person_repository.py`:
-  - `update(person_id: UUID, **fields) -> Person` — update specified fields; raise ValueError if not found
-  - `delete(person_id: UUID) -> None` — delete person; raise ValueError if not found. **Note**: CASCADE behavior is DB-level — relationships referencing this person (as subordinate or manager) have ON DELETE CASCADE per §11.6; action items have ON DELETE SET NULL on `person_id` per §11.4; no manual cascade code is needed in the repository
+  - `update(person_id: UUID, **fields) -> Person` — update specified fields on the person row; raise `ValueError` if not found. Accepts any subset of `{name, title, primary_area_id, reports_to_person_id}`; only columns explicitly provided are updated (no overwrite of omitted fields).
+  - `delete(person_id: UUID) -> None` — delete person; raise `ValueError` if not found. **Note**: CASCADE behavior is DB-level — relationships referencing this person (as subordinate or manager) have `ON DELETE CASCADE` per §11.6; action items have `ON DELETE SET NULL` on `person_id` per §11.4; no manual cascade code is needed in the repository.
 - [ ] Extend `ActionItemRepository` in `backend/app/repositories/action_item_repository.py`:
   - `list_by_person(person_id: UUID) -> list[ActionItem]` — return action items where `person_id` matches, ordered by `created_at` desc
 - [ ] Extend `InferredFactRepository` in `backend/app/repositories/inferred_fact_repository.py`:
-  - `list_linked_to_person(company_id: UUID, person_id: UUID, primary_area_id: UUID | None) -> list[InferredFact]` — return accepted/corrected facts linked to this person; query strategy per §10.5:
-    - Facts with `category = 'person'` where `inferred_value` matches the person's name (case-insensitive) — these are the facts that were accepted/corrected to create/identify this person
-    - Facts with any category where `functional_area_id` matches the person's `primary_area_id` (if the person has one) — these are facts tagged to the same functional area
-    - Union of both, deduplicated by fact ID, ordered by `created_at`
+  - `list_linked_to_person(company_id: UUID, person_id: UUID, primary_area_id: UUID | None) -> list[InferredFact]` — return accepted/corrected facts linked to this person. Query strategy: **# DECISION** (see rationale below): this method returns the union of two sets, deduplicated by fact ID, ordered by `created_at`:
+    1. Facts with `category = 'person'` where `inferred_value` ILIKE `%name%` (case-insensitive contains match against the person's name) — these are the facts that created or identified this person. **This extends beyond §10.5** which specifies only area-linked facts; the extension is deliberate to show the investigator which facts sourced this person.
+    2. Facts with any category where `functional_area_id` matches `primary_area_id` (if the person has one) — per §10.5.
+    - If `primary_area_id` is None, only set (1) is returned.
+- [ ] **Complete `PersonService.get_person()`** in `backend/app/services/person_service.py` — enrich the currently minimal response:
+  - Fetch area name: if `person.primary_area_id` is set, call `self._functional_area_repo.get_by_id(person.primary_area_id)` and include `primary_area_name`.
+  - Fetch reports-to name: if `person.reports_to_person_id` is set, call `self._person_repo.get_by_id(person.reports_to_person_id)` and include `reports_to_name`.
+  - Fetch action items: call `self._action_item_repo.list_by_person(person.id)` — returns `list[ActionItem]`.
+  - Fetch linked facts: call `self._inferred_fact_repo.list_linked_to_person(company_id, person.id, person.primary_area_id)` — returns `list[InferredFact]`.
+  - Return a fully-populated dict matching `PersonDetail` schema.
+- [ ] **Implement `PersonService.update_person()`** in `backend/app/services/person_service.py` — replace the `NotImplementedError` stub:
+  - Validate person exists and belongs to company (same guards as `get_person()`).
+  - Call `self._person_repo.update(person_id, **fields)` with only the fields provided.
+  - Return the updated `Person` ORM object.
+- [ ] **Implement `PersonService.delete_person()`** in `backend/app/services/person_service.py` — replace the `NotImplementedError` stub:
+  - Validate person exists and belongs to company.
+  - Call `self._person_repo.delete(person_id)`.
 - [ ] Add Pydantic schemas to `backend/app/schemas/person.py` (new file):
-  - `PersonCreateInput` — `name: str`, `title: str | None = None`, `primary_area_id: str | None = None`, `reports_to_person_id: str | None = None`
-  - `PersonUpdateInput` — all fields optional; same null-rejection pattern as `CompanyUpdate`
-  - `ActionItemSummary` — `item_id: UUID`, `description: str`, `status: str`, `notes: str | None`, `created_at: str`
-  - `LinkedFactSummary` — `fact_id: UUID`, `category: str`, `value: str`, `source_id: UUID`
+  - `PersonCreateInput`:
+    - `name: str` — with `@field_validator` requiring `.strip()` non-empty (same pattern as `CorrectRequest.corrected_value`); prevents whitespace-only names
+    - `title: str | None = None`
+    - `primary_area_id: UUID | None = None` — UUID for Pydantic format validation; consistency with all other entity ID fields. If provided and the area does not exist for this company, the route handler returns 422 (FK violation surfaced as IntegrityError from the DB, caught and re-raised as a 422 with a descriptive message).
+    - `reports_to_person_id: UUID | None = None` — same FK treatment as `primary_area_id`
+  - `PersonUpdateInput` — all fields optional with explicit null semantics:
+    - `name: str | None = None` — if provided, must be non-empty (same validator as PersonCreateInput); **null is rejected** because `persons.name` is NOT NULL in the DB
+    - `title: str | None = None` — **null is allowed** (clears the title; `persons.title` is nullable)
+    - `primary_area_id: UUID | None = None` — **null is allowed** (unlinks person from their area)
+    - `reports_to_person_id: UUID | None = None` — **null is allowed** (removes reporting relationship)
+    - **Implementation note**: use a sentinel pattern or `model_fields_set` to distinguish "field not provided" from "field explicitly set to null". Only fields present in the request body should be updated. This is the same challenge as `CompanyUpdate` — follow that pattern.
+  - `ActionItemSummary` — `item_id: UUID`, `description: str`, `status: str`, `notes: str | None`, `created_at: datetime` (use `datetime`, not `str` — FastAPI/Pydantic handles ISO 8601 serialization automatically)
+  - `LinkedFactSummary` — `fact_id: UUID`, `category: str`, `value: str`, `source_id: UUID`. **`value` is the effective value**: `corrected_value if corrected_value else inferred_value` — the investigator-approved value. The route handler or service must compute this before constructing the schema.
   - `PersonDetail` — `person_id: UUID`, `name: str`, `title: str | None`, `primary_area_id: UUID | None`, `primary_area_name: str | None`, `reports_to_person_id: UUID | None`, `reports_to_name: str | None`, `action_items: list[ActionItemSummary]`, `inferred_facts: list[LinkedFactSummary]`
   - `PersonListItem` — `person_id: UUID`, `name: str`, `title: str | None`, `primary_area_id: UUID | None`, `primary_area_name: str | None`
   - `PersonListResponse` — `items: list[PersonListItem]`
   - `PersonCreatedResponse` — `person_id: UUID`, `name: str`
 - [ ] Create route handlers in `backend/app/api/v1/people.py` (new file):
-  - `GET /companies/{company_id}/people` — list all people
-  - `POST /companies/{company_id}/people` — create a person
-  - `GET /companies/{company_id}/people/{person_id}` — person detail
-  - `PUT /companies/{company_id}/people/{person_id}` — update person
-  - `DELETE /companies/{company_id}/people/{person_id}` — delete person
+  - `GET /companies/{company_id}/people` — call `person_service.list_people()`; return `PersonListResponse`. Note: `PersonListItem` includes `primary_area_name` which requires a join or per-item area lookup; fetch all areas for the company once and build a name map, then annotate each person.
+  - `POST /companies/{company_id}/people` — parse `PersonCreateInput`; call `person_service.create_person()`; return `PersonCreatedResponse` with status 201. If `primary_area_id` or `reports_to_person_id` FK is invalid (IntegrityError), return 422.
+  - `GET /companies/{company_id}/people/{person_id}` — call `person_service.get_person()`; return `PersonDetail`
+  - `PUT /companies/{company_id}/people/{person_id}` — parse `PersonUpdateInput`; call `person_service.update_person()` with only the fields in `model_fields_set`; return `PersonDetail` (full updated detail, same shape as GET — no separate response schema needed)
+  - `DELETE /companies/{company_id}/people/{person_id}` — call `person_service.delete_person()`; return 204 No Content
 - [ ] Register in `backend/app/api/v1/router.py`
 - [ ] Write tests in `backend/tests/test_api/test_people.py` (new file):
   - `test_list_people` — returns all people for company
   - `test_list_people_empty` — no people -> empty items
   - `test_create_person` — POST with name+title -> 201, person created
   - `test_create_person_minimal` — name only -> 201
+  - `test_create_person_with_area_and_reports_to` — POST with valid `primary_area_id` and `reports_to_person_id`; verify both FK fields persisted and `primary_area_name`/`reports_to_name` appear correctly in a subsequent GET detail
+  - `test_create_person_empty_name` — POST with `{"name": "  "}` -> 422 (non-empty validator)
+  - `test_create_person_invalid_area_id` — POST with non-existent `primary_area_id` -> 422
   - `test_get_person_detail` — returns enriched detail with area name, action items, linked facts
-  - `test_get_person_detail_linked_facts_by_area` — person assigned to area -> facts tagged to that area appear in linked facts
+  - `test_get_person_detail_linked_facts_by_area` — person assigned to area -> accepted facts tagged to that area appear in linked facts
+  - `test_get_person_detail_no_area` — person with no `primary_area_id` -> `primary_area_name` is null, area-linked facts are empty (only name-matched facts present)
   - `test_get_person_not_found` — 404
-  - `test_update_person_name` — PUT with new name -> 200
-  - `test_update_person_area` — PUT with primary_area_id -> 200
+  - `test_update_person_name` — PUT with new name -> 200, returns `PersonDetail` with updated name
+  - `test_update_person_area` — PUT with `primary_area_id` -> 200
+  - `test_update_person_reports_to` — PUT with `reports_to_person_id` -> 200, FK persisted
+  - `test_update_person_clear_area` — PUT with `{"primary_area_id": null}` -> 200, area cleared (verify `primary_area_id` is null in response)
   - `test_update_person_not_found` — 404
   - `test_delete_person` — DELETE -> 204
+  - `test_delete_person_cascades` — DELETE a person who is a manager in a relationship; verify the relationship row is deleted (ON DELETE CASCADE) and the subordinate's `reports_to_person_id` is nulled
   - `test_delete_person_not_found` — 404
   - `test_people_unauthenticated` — 401
 
-**Why fifth**: people CRUD depends on PersonService (Unit 1) for the service layer. The route handlers are a thin REST wrapper.
+**Why fifth**: people CRUD depends on PersonService (Unit 1) for the service layer. The service stubs must be completed before the routes can function.
 
-**Rationale**: §10.5 defines five people endpoints. Person detail (GET) includes action items and linked inferred facts per the spec response shape: "inferred_facts contains accepted and corrected facts linked to this person's primary functional area via functional_area_id."
+**Rationale**: §10.5 defines five people endpoints. Person detail (GET) includes action items and linked inferred facts per the spec response shape. PUT returns `PersonDetail` (full updated detail) — no separate response schema is needed, this is consistent with returning the same shape as GET after an update.
+
+**# DECISION — `list_linked_to_person` name-matching extension**: §10.5 specifies "inferred_facts contains accepted and corrected facts linked to this person's primary functional area via functional_area_id." This method also includes facts where `inferred_value` contains the person's name (category = 'person'). Rationale: without this, the investigator visiting a person detail page would not see the original fact(s) that sourced this person — the primary purpose of the person record. The area-only approach per §10.5 would show area context but hide the provenance. The extension is additive (area facts still appear), does not change the area-linked behavior, and has no downstream consequences beyond showing more facts. The implementation code should carry a `# DECISION:` comment per §16.3.
 
 ---
 
