@@ -127,11 +127,13 @@ class Person(Base):
         "Relationship",
         foreign_keys="Relationship.subordinate_person_id",
         back_populates="subordinate",
+        cascade="all, delete-orphan",
     )
     manager_relationships = relationship(
         "Relationship",
         foreign_keys="Relationship.manager_person_id",
         back_populates="manager",
+        cascade="all, delete-orphan",
     )
 
 

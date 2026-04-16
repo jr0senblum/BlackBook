@@ -59,3 +59,12 @@ class ActionItemRepository:
             )
         )
         return result.scalars().first()
+
+    async def list_by_person(self, person_id: UUID) -> list[ActionItem]:
+        """Return action items for a person, ordered by created_at desc."""
+        result = await self._db.execute(
+            select(ActionItem)
+            .where(ActionItem.person_id == person_id)
+            .order_by(ActionItem.created_at.desc())
+        )
+        return list(result.scalars().all())

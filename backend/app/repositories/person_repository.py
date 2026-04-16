@@ -95,3 +95,40 @@ class PersonRepository:
         await self._db.flush()
         await self._db.refresh(person)
         return person
+
+    async def update(self, person_id: UUID, **fields) -> Person:
+        """Update arbitrary fields on a person row.
+
+        Only columns present in ``fields`` are modified; omitted fields are
+        untouched.  Accepts any subset of:
+          {name, title, primary_area_id, reports_to_person_id}.
+
+        Raises ValueError if the person does not exist.
+        """
+        person = await self.get_by_id(person_id)
+        if person is None:
+            raise ValueError(f"Person not found: {person_id}")
+        for col, value in fields.items():
+            setattr(person, col, value)
+        await self._db.flush()
+        await self._db.refresh(person)
+        return person
+
+    async def delete(self, person_id: UUID) -> None:
+        """Delete a person row.
+
+        CASCADE behaviour is DB-level:
+          - Relationships where this person is subordinate or manager:
+            ON DELETE CASCADE (§11.6).
+          - Action items referencing this person:
+            ON DELETE SET NULL on person_id (§11.4).
+          - persons.reports_to_person_id FK is also SET NULL — any persons
+            who reported to this person will have their reports_to cleared.
+
+        Raises ValueError if the person does not exist.
+        """
+        person = await self.get_by_id(person_id)
+        if person is None:
+            raise ValueError(f"Person not found: {person_id}")
+        await self._db.delete(person)
+        await self._db.flush()

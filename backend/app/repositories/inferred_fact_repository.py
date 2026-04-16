@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import InferredFact
@@ -122,6 +122,73 @@ class InferredFactRepository:
         items = list(result.scalars().all())
 
         return items, total
+
+    async def list_linked_to_person(
+        self,
+        company_id: UUID,
+        person_id: UUID,
+        person_name: str,
+        primary_area_id: UUID | None,
+    ) -> list[InferredFact]:
+        """Return accepted/corrected facts linked to a person.
+
+        # DECISION: this method returns the union of two sets beyond what §10.5
+        # specifies (area-linked facts only).  It also includes facts where
+        # inferred_value contains the person's name (case-insensitive contains
+        # match, category = 'person').  Rationale: without name-matched facts,
+        # the investigator visiting a person detail page would not see the
+        # original fact(s) that sourced this person.  The extension is additive —
+        # area facts still appear.  No downstream consequences beyond showing
+        # more facts on the detail page.
+
+        Set 1: accepted/corrected person-category facts whose inferred_value
+               contains person_name (case-insensitive).
+        Set 2: accepted/corrected facts of any category whose functional_area_id
+               matches primary_area_id (only when primary_area_id is not None).
+
+        The two sets are unioned, deduplicated by fact ID, and ordered by
+        created_at ascending.
+        """
+        base_filters = [
+            InferredFact.company_id == company_id,
+            InferredFact.status.in_(("accepted", "corrected")),
+        ]
+
+        # Set 1: person facts whose inferred_value mentions the person's name
+        name_query = (
+            select(InferredFact)
+            .where(
+                *base_filters,
+                InferredFact.category == "person",
+                func.lower(InferredFact.inferred_value).contains(
+                    person_name.lower()
+                ),
+            )
+        )
+
+        if primary_area_id is not None:
+            # Set 2: facts tagged to the person's primary area
+            area_query = (
+                select(InferredFact)
+                .where(
+                    *base_filters,
+                    InferredFact.functional_area_id == primary_area_id,
+                )
+            )
+            # Union both sets and deduplicate by ID via a subquery
+            combined = union_all(name_query, area_query).subquery()
+            # Re-select as ORM objects, deduplicate by id, order by created_at
+            result = await self._db.execute(
+                select(InferredFact)
+                .where(InferredFact.id.in_(select(combined.c.id)))
+                .order_by(InferredFact.created_at.asc())
+            )
+        else:
+            result = await self._db.execute(
+                name_query.order_by(InferredFact.created_at.asc())
+            )
+
+        return list(result.scalars().all())
 
     async def update_corrected_value(
         self,

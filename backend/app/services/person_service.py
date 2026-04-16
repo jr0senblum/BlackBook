@@ -163,10 +163,14 @@ class PersonService:
     async def get_person(
         self, company_id: UUID, person_id: UUID
     ) -> dict:
-        """Return enriched person detail.
+        """Return enriched person detail per §10.5.
 
-        Enriched with area name, reports_to name, action items, linked
-        inferred facts. Full implementation in Unit 5.
+        Enriched with:
+          - primary_area_name: looked up from functional_area_repo
+          - reports_to_name: looked up from person_repo (self-join)
+          - action_items: list of action items for this person
+          - inferred_facts: accepted/corrected facts linked to this person
+            (name-matched + area-tagged — see list_linked_to_person)
         """
         person = await self._person_repo.get_by_id(person_id)
         if person is None:
@@ -175,13 +179,42 @@ class PersonService:
             raise PersonCompanyMismatchError(
                 f"Person {person_id} does not belong to company {company_id}"
             )
-        # Basic detail — enrichment added in Unit 5
+
+        # Enrich: area name
+        primary_area_name: str | None = None
+        if person.primary_area_id is not None:
+            area = await self._functional_area_repo.get_by_id(person.primary_area_id)
+            if area is not None:
+                primary_area_name = area.name
+
+        # Enrich: reports-to name
+        reports_to_name: str | None = None
+        if person.reports_to_person_id is not None:
+            mgr = await self._person_repo.get_by_id(person.reports_to_person_id)
+            if mgr is not None:
+                reports_to_name = mgr.name
+
+        # Enrich: action items
+        action_items = await self._action_item_repo.list_by_person(person.id)
+
+        # Enrich: linked inferred facts (name-matched + area-tagged)
+        inferred_facts = await self._inferred_fact_repo.list_linked_to_person(
+            company_id=company_id,
+            person_id=person.id,
+            person_name=person.name,
+            primary_area_id=person.primary_area_id,
+        )
+
         return {
             "person_id": person.id,
             "name": person.name,
             "title": person.title,
             "primary_area_id": person.primary_area_id,
+            "primary_area_name": primary_area_name,
             "reports_to_person_id": person.reports_to_person_id,
+            "reports_to_name": reports_to_name,
+            "action_items": action_items,
+            "inferred_facts": inferred_facts,
         }
 
     # ── Targeted field updates (available now) ────────────────────
@@ -206,21 +239,27 @@ class PersonService:
     ) -> Person:
         """Update specified fields on a person.
 
-        Note: depends on PersonRepository.update() added in Unit 5.
+        Validates that the person exists and belongs to company_id before
+        delegating to the repository.  Only the fields provided are updated.
         """
-        raise NotImplementedError(
-            "PersonService.update_person() requires PersonRepository.update() "
-            "which is added in Unit 5"
-        )
+        person = await self._person_repo.get_by_id(person_id)
+        if person is None:
+            raise PersonNotFoundError(f"Person not found: {person_id}")
+        if person.company_id != company_id:
+            raise PersonCompanyMismatchError(
+                f"Person {person_id} does not belong to company {company_id}"
+            )
+        return await self._person_repo.update(person_id, **fields)
 
     async def delete_person(
         self, company_id: UUID, person_id: UUID
     ) -> None:
-        """Delete a person.
-
-        Note: depends on PersonRepository.delete() added in Unit 5.
-        """
-        raise NotImplementedError(
-            "PersonService.delete_person() requires PersonRepository.delete() "
-            "which is added in Unit 5"
-        )
+        """Delete a person after validating company ownership."""
+        person = await self._person_repo.get_by_id(person_id)
+        if person is None:
+            raise PersonNotFoundError(f"Person not found: {person_id}")
+        if person.company_id != company_id:
+            raise PersonCompanyMismatchError(
+                f"Person {person_id} does not belong to company {company_id}"
+            )
+        await self._person_repo.delete(person_id)
